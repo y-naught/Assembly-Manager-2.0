@@ -1,0 +1,21 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build AssemblyManagerPlugin",
+      "command": "dotnet",
+      "type": "shell",
+      "args": [
+        "build",
+        "-clp:NoSummary",
+        "${workspaceFolder}/AssemblyManagerPlugin/AssemblyManagerPlugin.csproj"
+      ],
+      "problemMatcher": "$msCompile",
+      "presentation": {
+        "reveal": "always",
+        "clear": true
+      },
+      "group": "build"
+    }
+  ]
+}

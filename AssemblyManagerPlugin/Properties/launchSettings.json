@@ -1,0 +1,20 @@
+{
+  "profiles": {
+    "Rhino 8 Mac - Assembly Manager": {
+      "commandName": "Executable",
+      "executablePath": "/Applications/Rhino 8.app/Contents/MacOS/Rhinoceros",
+      "commandLineArgs": "",
+      "environmentVariables": {
+        "RHINO_PACKAGE_DIRS": "$(ProjectDir)bin/Debug/net7.0"
+      }
+    },
+    "Rhino 8 WIP Mac - Assembly Manager": {
+      "commandName": "Executable",
+      "executablePath": "/Applications/RhinoWIP.app/Contents/MacOS/Rhinoceros",
+      "commandLineArgs": "",
+      "environmentVariables": {
+        "RHINO_PACKAGE_DIRS": "$(ProjectDir)bin/Debug/net7.0"
+      }
+    }
+  }
+}

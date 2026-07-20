@@ -1,0 +1,71 @@
+{
+  "Materials": [
+    {
+      "Id": "MDF",
+      "Name": "MDF",
+      "Category": "composite",
+      "Description": "Medium density fiberboard sheet stock.",
+      "DensityLbPerCubicInch": 0.026,
+      "Shapes": [
+        {
+          "Id": "MDF_050_48x96",
+          "Name": "1/2 sheet 48x96",
+          "ShapeType": "sheetgood",
+          "Thickness": 0.5,
+          "Unit": "in",
+          "Width": 48,
+          "Height": 96,
+          "NestingEfficiency": 0.82,
+          "PricePerUnit": 42.5,
+          "PriceUnit": "sheet"
+        },
+        {
+          "Id": "MDF_075_49x97",
+          "Name": "3/4 sheet 49x97 actual",
+          "ShapeType": "sheetgood",
+          "Thickness": 0.75,
+          "Unit": "in",
+          "SheetWidth": 48,
+          "SheetHeight": 96,
+          "Width": 49,
+          "Height": 97,
+          "NestingEfficiency": 0.82,
+          "PricePerUnit": 57,
+          "PriceUnit": "sheet"
+        }
+      ]
+    },
+    {
+      "Id": "STEEL",
+      "Name": "Steel",
+      "Category": "metal",
+      "DensityLbPerCubicInch": 0.283,
+      "Shapes": [
+        {
+          "Id": "STEEL_PLATE_025_48x96",
+          "Name": "1/4 plate 48x96",
+          "ShapeType": "plate",
+          "Thickness": 0.25,
+          "Unit": "in",
+          "Width": 48,
+          "Height": 96,
+          "NestingEfficiency": 0.78,
+          "PricePerUnit": 310,
+          "PriceUnit": "sheet"
+        },
+        {
+          "Id": "STEEL_TUBE_2x2x120",
+          "Name": "2x2 tube 120",
+          "ShapeType": "tube",
+          "Unit": "in",
+          "StockLength": 120,
+          "Width": 2,
+          "Height": 2,
+          "WallThickness": 0.125,
+          "PricePerUnit": 64,
+          "PriceUnit": "length"
+        }
+      ]
+    }
+  ]
+}

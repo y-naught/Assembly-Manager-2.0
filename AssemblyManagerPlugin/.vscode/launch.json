@@ -1,0 +1,34 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Rhino 8 Mac - Assembly Manager",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "/Applications/Rhino 8.app/Contents/MacOS/Rhinoceros",
+      "args": [],
+      "env": {
+        "RHINO_PACKAGE_DIRS": "${workspaceFolder}/bin/Debug/net7.0"
+      },
+      "cwd": "${workspaceFolder}",
+      "stopAtEntry": false,
+      "console": "internalConsole"
+    },
+    {
+      "name": "Rhino 8 WIP Mac - Assembly Manager",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "/Applications/RhinoWIP.app/Contents/MacOS/Rhinoceros",
+      "args": [],
+      "env": {
+        "RHINO_PACKAGE_DIRS": "${workspaceFolder}/bin/Debug/net7.0"
+      },
+      "cwd": "${workspaceFolder}",
+      "stopAtEntry": false,
+      "console": "internalConsole"
+    }
+  ],
+  "compounds": []
+}

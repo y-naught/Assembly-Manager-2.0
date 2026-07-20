@@ -1,0 +1,12 @@
+---
+name: Gazelle
+version: 1.0.2
+authors:
+- Greg King
+description: Automation tools that help prepare models for manufacturing and producing technical documentation for fabrication.
+keywords:
+- Technical-documentation
+- manufacturing
+- BOM
+- Layouts
+icon: icon.png

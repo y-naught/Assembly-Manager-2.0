@@ -1,0 +1,7 @@
+---
+name: AssemblyManagerPlugin
+version: 1.0.0
+authors:
+- Greg King
+description: Assembly, part, fabrication documentation, and manufacturing prep tools for Rhino.
+url: <url>

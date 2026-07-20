@@ -1,0 +1,9 @@
+material_id,material_name,material_category,density_lb_per_cubic_inch,shape_id,shape_name,shape_type,thickness,unit,sheetsize,stock_length,width,height,diameter,wall_thickness,nesting_efficiency,price_per_unit,price_unit
+MDF,MDF,composite,0.026,MDF_050_48x96,1/2 sheet 48x96,sheetgood,0.5,in,48x96,,48,96,,,0.82,42.50,sheet
+MDF,MDF,composite,0.026,MDF_075_48x96,3/4 sheet 48x96,sheetgood,0.75,in,48x96,,48,96,,,0.82,55.00,sheet
+MDF,MDF,composite,0.026,MDF_075_49x97,3/4 sheet 49x97 actual,sheetgood,0.75,in,48x96,,49,97,,,0.82,57.00,sheet
+MDF,MDF,composite,0.026,MDF_075_48x120,3/4 sheet 48x120,sheetgood,0.75,in,48x120,,48,120,,,0.82,72.00,sheet
+MDF,MDF,composite,0.026,MDF_100_60x144,1 in sheet 60x144,sheetgood,1.0,in,60x144,,60,144,,,0.82,138.00,sheet
+STEEL,Steel,metal,0.283,STEEL_PLATE_025_48x96,1/4 plate 48x96,plate,0.25,in,48x96,,48,96,,,0.78,310.00,sheet
+STEEL,Steel,metal,0.283,STEEL_TUBE_2x2x120,2x2 tube 120,tube,,in,,120,2,2,,0.125,0.8,64.00,length
+ALUMINUM,Aluminum,metal,0.098,AL_ROUND_100_144,1 in round bar 144,round stock,,in,,144,,,1.0,,0.8,48.00,length
