@@ -53,7 +53,7 @@ public sealed class LayPartsFlatService
         var laidFlatCount = 0;
         var preparedParts = new List<LayFlatPartItem>();
 
-        foreach (var part in assembly.Parts.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase))
+        foreach (var part in assembly.Parts.OrderBy(p => p.Name, PartNameComparer.Instance))
         {
             part.CamObjectIds.Clear();
             var sourceId = part.GeneratedObjectIds.FirstOrDefault(id => doc.Objects.FindId(id) is not null);
@@ -91,7 +91,7 @@ public sealed class LayPartsFlatService
         foreach (var row in rows)
         {
             var rowItems = row
-                .OrderBy(item => item.Part.Name, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(item => item.Part.Name, PartNameComparer.Instance)
                 .ToList();
             var rowHeight = rowItems.Max(item => item.Height);
             var labelTopY = yCursor;
@@ -243,6 +243,63 @@ public sealed class LayPartsFlatService
 
         return LayerService.DefaultPartColors[(Math.Max(1, index) - 1) % LayerService.DefaultPartColors.Length];
     }
+
+    private sealed class PartNameComparer : IComparer<string>
+    {
+        public static readonly PartNameComparer Instance = new();
+
+        public int Compare(string? x, string? y)
+        {
+            if (string.Equals(x, y, StringComparison.OrdinalIgnoreCase))
+                return 0;
+            if (string.IsNullOrWhiteSpace(x))
+                return -1;
+            if (string.IsNullOrWhiteSpace(y))
+                return 1;
+
+            var xToken = ParsePartName(x);
+            var yToken = ParsePartName(y);
+            var prefixCompare = string.Compare(xToken.Prefix, yToken.Prefix, StringComparison.OrdinalIgnoreCase);
+            if (prefixCompare != 0)
+                return prefixCompare;
+
+            if (xToken.Number.HasValue && yToken.Number.HasValue)
+            {
+                var numberCompare = xToken.Number.Value.CompareTo(yToken.Number.Value);
+                if (numberCompare != 0)
+                    return numberCompare;
+            }
+            else if (xToken.Number.HasValue)
+            {
+                return -1;
+            }
+            else if (yToken.Number.HasValue)
+            {
+                return 1;
+            }
+
+            return string.Compare(x, y, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static PartNameToken ParsePartName(string value)
+        {
+            var trimmed = value.Trim();
+            var digitStart = trimmed.Length;
+            while (digitStart > 0 && char.IsDigit(trimmed[digitStart - 1]))
+                digitStart--;
+
+            var prefix = trimmed[..digitStart];
+            if (digitStart < trimmed.Length
+                && int.TryParse(trimmed[digitStart..], out var number))
+            {
+                return new PartNameToken(prefix, number);
+            }
+
+            return new PartNameToken(trimmed, null);
+        }
+    }
+
+    private readonly record struct PartNameToken(string Prefix, int? Number);
 
     private sealed class LayFlatPartItem
     {
