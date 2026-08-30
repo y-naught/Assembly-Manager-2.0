@@ -152,33 +152,33 @@ class AssemblyManagerEtoDialog(forms.Dialog[bool]):
         groups_to_copy = []
         for component in component_list:
             print(component)
-            parts_in_component = rs.LayerChildren(component)
+            component_path = "ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assembly_name + "::" + component
+            parts_in_component = rs.LayerChildren(component_path)
             print(parts_in_component)
             if(len(parts_in_component) > 0):
                 temp_part = rs.ObjectsByLayer(parts_in_component[0])
                 if(len(temp_part) > 0):
                     groups = rs.ObjectGroups(temp_part[0])
                     if(len(groups) > 0):
-                        groups_to_copy.append([component, groups[0]])
+                        groups_to_copy.append([component_path, groups[0]])
         
-        # for each group extracted, copy to DRAWINGS layer, orient objects along x-axis
+        # for each group extracted, copy to COPIED COMPONENTS, orient objects along x-axis
         drawing_groups = []
         for group in groups_to_copy:
             new_group = rs.AddGroup()
             drawing_groups.append(new_group)
             translation_vector = rs.CreateVector(500,0,0)
             group_parts = rs.ObjectsByGroup(group[1])
-            component_layer_string = group[0]
             part_layers = []
             for part in group_parts:
                 part_layers.append(rs.ObjectLayer(part))
             part_layers = set(part_layers)
             part_layers = list(part_layers)
-            # create layers in drawings
+            # create layers in COPIED COMPONENTS
             for layer in part_layers:
                 color = rs.LayerColor(layer)
-                removed_shop = layer.replace("SHOP::", '')
-                new_layer_string = "DRAWINGS::" + removed_shop
+                removed_original_assemblies = layer.replace("ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::", '')
+                new_layer_string = "ASSEMBLY MANAGER::COPIED COMPONENTS::" + removed_original_assemblies
                 new_part_layer = rs.AddLayer(new_layer_string, color=color)
                 for part in group_parts:
                     temp_layer = rs.ObjectLayer(part)
@@ -233,7 +233,7 @@ class AssemblyManagerEtoDialog(forms.Dialog[bool]):
         part_prefix = self.part_prefix_textbox.Text
         component_prefix = self.component_prefix_textbox.Text
 
-        component_layer_string = "SHOP::" + assembly_name + "::" + component_name
+        component_layer_string = "ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assembly_name + "::" + component_name
         cp.generate_parts(part_prefix, component_prefix, assembly_name, 3.0)
         
         self.update_assembly_list()

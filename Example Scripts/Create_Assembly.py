@@ -72,7 +72,7 @@ def removeAssembly(assy_name):
         if(ass == assy_name):
             components_to_remove = getComponents(ass)
             for component in components_to_remove:
-                component_name = "SHOP::" + assy_name + "::" + component
+                component_name = "ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assy_name + "::" + component
                 rs.DeleteDocumentData("Components", component_name)
             rs.DeleteDocumentData("Assemblies", assy_name)
             removeAssyLayer(assy_name)
@@ -147,7 +147,7 @@ def deconstructComponentsString(compString):
 
 # gets the child layers of an assembly
 def getAssemblyLayers(assy_name):
-    assembly_children = rs.LayerChildren("SHOP::" + assy_name)
+    assembly_children = rs.LayerChildren("ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assy_name)
     return assembly_children
 
 # checks components within an assembly for collisions
@@ -193,7 +193,7 @@ def createComponent(assy_name, component_name):
     # check to see if the component has a naming collision in the assembly
     if(not checkComponentCollision(assy_name, component_name) and not checkAssemblyLayers(assy_name, component_name)):
         # create a new entry for component
-        rs.AddLayer(component_name, parent="SHOP::" + assy_name)
+        rs.AddLayer(component_name, parent="ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assy_name)
         addComponentToAssembly(assy_name, component_name)
     else:
         print("Component naming collision!")
@@ -205,7 +205,7 @@ def getComponents(assembly_name):
 
 # returns the data from a component
 def getCompData(assy_name, component_name):
-    component_full_name = "SHOP::" + assy_name + "::" + component_name
+    component_full_name = "ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assy_name + "::" + component_name
     component_data = rs.GetDocumentData("Components", component_full_name)
     deconstructed_data = deconstructComponentsString(component_data)
     if(deconstructed_data):
@@ -217,30 +217,40 @@ def getCompData(assy_name, component_name):
 # removes the named component from specific assembly
 def removeComponent(assy_name, component_name):
     component_string = assy_name + "&&" + component_name
-    rs.PurgeLayer("SHOP::" + assy_name + "::" + component_name)
+    rs.PurgeLayer("ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assy_name + "::" + component_name)
     rs.DeleteDocumentData("Components", component_string)
     removeComponentFromAssembly(assy_name, component_name)
 
 
-# returns child layers from SHOP Master Layer
-def getShopLayers():
-    shop_children = rs.LayerChildren("SHOP")
-    return shop_children
+# returns assembly layers from the ORIGINAL ASSEMBLIES branch
+def getOriginalAssemblyLayers():
+    assembly_children = rs.LayerChildren("ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES")
+    return assembly_children
 
 
-# create layer with the SHOP layer being the parent
+# create an assembly below each managed output branch
 def createAssyLayer(assy_name):
-    rs.AddLayer(assy_name, parent="SHOP")
+    manager_root = "ASSEMBLY MANAGER"
+    branch_names = ["ORIGINAL ASSEMBLIES", "COPIED COMPONENTS", "PARTS"]
+    if(not rs.IsLayer(manager_root)):
+        rs.AddLayer(manager_root)
+    for branch_name in branch_names:
+        branch_path = manager_root + "::" + branch_name
+        if(not rs.IsLayer(branch_path)):
+            rs.AddLayer(branch_name, parent=manager_root)
+        assembly_path = branch_path + "::" + assy_name
+        if(not rs.IsLayer(assembly_path)):
+            rs.AddLayer(assy_name, parent=branch_path)
 
 
-# removes layer from SHOP parent
+# removes an assembly from each managed output branch
 def removeAssyLayer(assy_name):
-    if(rs.LayerId("SHOP::" + assy_name) != None):
-        rs.PurgeLayer("SHOP::" + assy_name)
-    if(rs.LayerId("CAM::" + assy_name) != None):
-        rs.PurgeLayer("CAM::" + assy_name)
-    if(rs.LayerId("DRAWINGS::" + assy_name) != None):
-        rs.PurgeLayer("DRAWINGS::" + assy_name)
+    if(rs.LayerId("ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assy_name) != None):
+        rs.PurgeLayer("ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assy_name)
+    if(rs.LayerId("ASSEMBLY MANAGER::PARTS::" + assy_name) != None):
+        rs.PurgeLayer("ASSEMBLY MANAGER::PARTS::" + assy_name)
+    if(rs.LayerId("ASSEMBLY MANAGER::COPIED COMPONENTS::" + assy_name) != None):
+        rs.PurgeLayer("ASSEMBLY MANAGER::COPIED COMPONENTS::" + assy_name)
 
 
 # creates an assembly, checks for naming collisions, updates layer structure and document data with system.

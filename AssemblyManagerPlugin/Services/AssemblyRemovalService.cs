@@ -102,9 +102,12 @@ public sealed class AssemblyRemovalService
     {
         return new[]
         {
-            LayerService.ShopAssembly(assemblyName),
-            LayerService.CamAssembly(assemblyName),
-            LayerService.DrawingsAssembly(assemblyName)
+            LayerService.OriginalAssembly(assemblyName),
+            LayerService.PartsAssembly(assemblyName),
+            LayerService.CopiedComponentsAssembly(assemblyName),
+            LayerService.LegacyOriginalAssembly(assemblyName),
+            LayerService.LegacyPartsAssembly(assemblyName),
+            LayerService.LegacyCopiedComponentsAssembly(assemblyName)
         };
     }
 

@@ -38,7 +38,7 @@ public sealed class LayPartsFlatService
             ?? throw new InvalidOperationException($"Assembly '{assemblyName}' was not found.");
 
         _layers.EnsureRootLayers(doc);
-        _layers.EnsureLayer(doc, LayerService.CamAssembly(assemblyName));
+        _layers.EnsureLayer(doc, LayerService.PartsAssembly(assemblyName));
         var pluginSettings = _settings.Load();
         doc.ModelSpaceAnnotationScalingEnabled = true;
         doc.ModelSpaceTextScale = 12.0;
@@ -119,7 +119,7 @@ public sealed class LayPartsFlatService
                     continue;
 
                 var part = item.Part;
-                var cam3dLayer = $"{LayerService.CamPart(assemblyName, part.Name)}::3D";
+                var cam3dLayer = $"{LayerService.PartsPart(assemblyName, part.Name)}::3D";
                 var camLayerIndex = _layers.EnsureLayerIndex(doc, cam3dLayer, LayerColorForPart(part.Name, pluginSettings.AssemblyManager.ColorizeParts));
                 var attributes = item.SourceObject.Attributes.Duplicate();
                 attributes.LayerIndex = camLayerIndex;
@@ -160,7 +160,7 @@ public sealed class LayPartsFlatService
         string materialLabel,
         double textHeight)
     {
-        var layer = $"{LayerService.CamPart(assemblyName, part.Name)}::text";
+        var layer = $"{LayerService.PartsPart(assemblyName, part.Name)}::text";
         var layerIndex = _layers.EnsureLayerIndex(doc, layer, System.Drawing.Color.Black);
         var text = $"{part.Name}\nQTY : {part.Quantity}\n{Math.Round(thickness, 3):0.###}\" | {materialLabel}";
         var entity = new TextEntity
@@ -188,7 +188,7 @@ public sealed class LayPartsFlatService
         Point3d anchor,
         double textHeight)
     {
-        var layer = $"{LayerService.CamAssembly(assemblyName)}::row labels";
+        var layer = $"{LayerService.PartsAssembly(assemblyName)}::row labels";
         var layerIndex = _layers.EnsureLayerIndex(doc, layer, System.Drawing.Color.Black);
         var label = string.IsNullOrWhiteSpace(materialLabel) ? "TBD" : materialLabel;
         var text = $"{label} | {Math.Round(thickness, 3):0.###}\"";

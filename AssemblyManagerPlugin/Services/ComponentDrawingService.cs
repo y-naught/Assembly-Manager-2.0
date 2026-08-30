@@ -26,7 +26,7 @@ public sealed class ComponentDrawingService
             ?? throw new InvalidOperationException($"Assembly '{assemblyName}' was not found.");
 
         _layers.EnsureRootLayers(doc);
-        _layers.EnsureLayer(doc, LayerService.DrawingsAssembly(assemblyName));
+        _layers.EnsureLayer(doc, LayerService.CopiedComponentsAssembly(assemblyName));
 
         var copiedComponentCount = 0;
         var rowIndex = 0;
@@ -76,8 +76,10 @@ public sealed class ComponentDrawingService
 
         foreach (var partName in component.PartNames)
         {
-            var shopLayer = LayerService.ShopPart(assemblyName, component.Name, partName);
-            var layerIndex = _layers.FindLayerIndex(doc, shopLayer);
+            var originalLayer = LayerService.OriginalPart(assemblyName, component.Name, partName);
+            var layerIndex = _layers.FindLayerIndex(doc, originalLayer);
+            if (layerIndex < 0)
+                layerIndex = _layers.FindLayerIndex(doc, LayerService.LegacyOriginalPart(assemblyName, component.Name, partName));
             if (layerIndex < 0)
                 continue;
 
@@ -100,7 +102,7 @@ public sealed class ComponentDrawingService
         RhinoObject sourceObject)
     {
         var sourceLayer = doc.Layers[sourceObject.Attributes.LayerIndex];
-        var drawingLayer = LayerService.DrawingsPart(assemblyName, componentName, partName);
+        var drawingLayer = LayerService.CopiedComponentPart(assemblyName, componentName, partName);
         var drawingLayerIndex = _layers.EnsureLayerIndex(doc, drawingLayer, sourceLayer.Color);
         var geometry = sourceObject.Geometry.Duplicate();
         var attributes = sourceObject.Attributes.Duplicate();
@@ -172,7 +174,7 @@ public sealed class ComponentDrawingService
 
     private static void CreateGroup(RhinoDoc doc, string assemblyName, string componentName, IEnumerable<Guid> objectIds)
     {
-        var groupIndex = doc.Groups.Add(TruncateGroupName($"DRAWINGS_{assemblyName}_{componentName}_{Guid.NewGuid():N}"));
+        var groupIndex = doc.Groups.Add(CreateGroupName(assemblyName, componentName));
         if (groupIndex < 0)
             return;
 
@@ -180,8 +182,15 @@ public sealed class ComponentDrawingService
             doc.Groups.AddToGroup(groupIndex, objectId);
     }
 
-    private static string TruncateGroupName(string name)
+    private static string CreateGroupName(string assemblyName, string componentName)
     {
-        return name.Length <= 50 ? name : name[..50];
+        const int maximumLength = 50;
+        var uniqueSuffix = $"_{Guid.NewGuid():N}"[..13];
+        var readableName = $"COPIED_COMPONENTS_{assemblyName}_{componentName}";
+        var maximumReadableLength = maximumLength - uniqueSuffix.Length;
+        if (readableName.Length > maximumReadableLength)
+            readableName = readableName[..maximumReadableLength];
+
+        return readableName + uniqueSuffix;
     }
 }

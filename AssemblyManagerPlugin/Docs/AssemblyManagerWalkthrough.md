@@ -64,7 +64,7 @@ After import:
 
 - You can copy the hardware block instance as needed.
 - Put copied hardware instances into the same Rhino groups as the components they belong to.
-- When you create the assembly, Gazelle carries the hardware into `SHOP`.
+- When you create the assembly, Gazelle carries the hardware into `ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES`.
 - Hardware contributes to component identity.
 - Hardware gets counted in the BOM.
 
@@ -90,45 +90,47 @@ Gazelle will ask you to select component groups in the model. The selection is g
 
 Gazelle then:
 
-- Creates `SHOP::<assembly>`.
+- Creates `ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::<assembly>`.
 - Creates generated component layers.
 - Categorizes equivalent parts.
 - Categorizes equivalent components.
-- Copies generated part and hardware geometry to `SHOP`.
+- Copies generated part and hardware geometry to `ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES`.
 - Saves assembly metadata in the Rhino document.
 - Displays warnings for unsupported geometry.
 
 ## 6. Understand The Generated Layers
 
-Gazelle creates several root layer trees:
+Gazelle creates one parent layer with three managed output branches:
 
-- `SHOP`: generated assembly geometry.
-- `CAM`: flat part output.
-- `DRAWINGS`: drawing-oriented component copies.
-- `HARDWARE`: imported hardware blocks.
-- `ANNO`: annotations and generated tables.
+- `ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES`: generated assembly geometry.
+- `ASSEMBLY MANAGER::COPIED COMPONENTS`: drawing-oriented component copies.
+- `ASSEMBLY MANAGER::PARTS`: flat part output.
 
-The `SHOP` geometry is managed output. Treat it like a generated data structure.
+It also creates the top-level `HARDWARE` tree for imported hardware blocks and `ANNO` for annotations and generated tables.
 
-Do not use `SHOP` geometry as your manual drawing playground if you want refreshes, estimates, and references to stay reliable. Edit the original source model when the design changes, then use `RefreshAssemblyReferences` or recreate the assembly as needed.
+The `ORIGINAL ASSEMBLIES` geometry is managed output. Treat it like a generated data structure.
+
+Do not use `ORIGINAL ASSEMBLIES` geometry as your manual drawing playground if you want refreshes, estimates, and references to stay reliable. Edit the original source model when the design changes, then use `RefreshAssemblyReferences` or recreate the assembly as needed.
+
+New output always uses this hierarchy. Gazelle does not silently rename legacy `SHOP`, `DRAWINGS`, or `CAM` trees in an existing Rhino document.
 
 ## 7. Copy And Orient Components For Drawings
 
 Use `CopyOrientComponents` when you need geometry for shop drawing setup.
 
-This command copies one representative of each component type to `DRAWINGS::<assembly>`, lays those component copies out in rows, optimizes the plan rotation, and groups each drawing copy.
+This command copies one representative of each component type to `ASSEMBLY MANAGER::COPIED COMPONENTS::<assembly>`, lays those component copies out in rows, optimizes the plan rotation, and groups each drawing copy.
 
 This is the geometry you can move, rotate, isolate, and edit for drawing presentation.
 
 Good to edit:
 
-- `DRAWINGS` copies created by `CopyOrientComponents`.
+- `COPIED COMPONENTS` copies created by `CopyOrientComponents`.
 - Layout annotations.
 - Detail labels and leaders.
 
 Do not manually edit as production source:
 
-- Original generated `SHOP` geometry.
+- Generated `ORIGINAL ASSEMBLIES` geometry.
 - Generated assembly metadata.
 - Generated layer paths that Gazelle expects to own.
 
@@ -136,7 +138,7 @@ Do not manually edit as production source:
 
 Run `LayPartsFlat` from the Assembly Manager window or command line.
 
-Gazelle lays one representative of each unique part onto `CAM::<assembly>`. It does not lay hardware flat.
+Gazelle lays one representative of each unique part onto `ASSEMBLY MANAGER::PARTS::<assembly>`. It does not lay hardware flat.
 
 What happens:
 
@@ -213,8 +215,8 @@ Material rows come from estimated sheet/stock counts. Hardware rows come from ma
 
 Use `LabelDetail` when you want quick text-dot labels for many visible objects in one detail.
 
-- `Assembly` labels visible component groups under `SHOP`.
-- `Component` labels visible part layers under `DRAWINGS`.
+- `Assembly` labels visible component groups under `ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES`.
+- `Component` labels visible part layers under `ASSEMBLY MANAGER::COPIED COMPONENTS`.
 
 ### Add leader labels through a detail
 

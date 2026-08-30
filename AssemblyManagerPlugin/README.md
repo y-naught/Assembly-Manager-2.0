@@ -2,7 +2,7 @@
 
 Gazelle is a Rhino 8 plugin for turning a fabrication model into organized assembly geometry, drawing geometry, material estimates, and BOM exports.
 
-The main workflow is the Assembly Manager. It takes grouped Rhino geometry, identifies equivalent parts and components, creates a managed `SHOP` layer structure, and then gives you tools for laying parts flat, copying component views for drawings, assigning materials, carrying hardware through the system, and exporting the information needed for fabrication.
+The main workflow is the Assembly Manager. It takes grouped Rhino geometry, identifies equivalent parts and components, creates a managed `ASSEMBLY MANAGER` layer structure, and then gives you tools for laying parts flat, copying component views for drawings, assigning materials, carrying hardware through the system, and exporting the information needed for fabrication.
 
 ## What Gazelle Does
 
@@ -10,7 +10,7 @@ The main workflow is the Assembly Manager. It takes grouped Rhino geometry, iden
 - Categorizes matching parts with geometry fingerprints, material assignment, and feature-arrangement checks.
 - Categorizes matching components based on the parts and hardware inside each component group.
 - Passes imported hardware through without analyzing it as manufacturable sheet parts.
-- Creates organized `SHOP`, `CAM`, `DRAWINGS`, `HARDWARE`, and `ANNO` layer trees.
+- Creates `ORIGINAL ASSEMBLIES`, `COPIED COMPONENTS`, and `PARTS` branches under an `ASSEMBLY MANAGER` parent, plus top-level `HARDWARE` and `ANNO` trees.
 - Lays one representative of each unique part flat for CAM or nesting review.
 - Groups flat parts by assigned material and material thickness.
 - Stores a persistent material library with parent materials and purchasable stock shapes.

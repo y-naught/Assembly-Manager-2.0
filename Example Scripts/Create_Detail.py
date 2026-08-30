@@ -226,7 +226,7 @@ class NewDetailEto(forms.Dialog[bool]):
             layouts = lm.populateLayoutList()
             layout_name = layouts[self.layout_dropdown.SelectedIndex]
             rs.CurrentDetail(layout_name, detail=detail_id)
-            assembly_objects = get_assembly_objects("SHOP::" + assembly_name)
+            assembly_objects = get_assembly_objects("ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assembly_name)
             bounding_points = get_bounding_scaled(assembly_objects, 1.25)
             rs.ZoomBoundingBox(bounding_points, view=rs.ViewTitle(detail_id))
             rs.DeleteObjects(bounding_points)

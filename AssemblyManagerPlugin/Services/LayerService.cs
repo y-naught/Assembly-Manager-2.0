@@ -34,9 +34,10 @@ public sealed class LayerService
 
     public void EnsureRootLayers(RhinoDoc doc)
     {
-        EnsureLayer(doc, AssemblyManagerConstants.ShopRootLayer, Color.DarkGray);
-        EnsureLayer(doc, AssemblyManagerConstants.CamRootLayer, Color.DarkGray);
-        EnsureLayer(doc, AssemblyManagerConstants.DrawingsRootLayer, Color.DarkGray);
+        EnsureLayer(doc, AssemblyManagerConstants.AssemblyManagerRootLayer, Color.DarkGray);
+        EnsureLayer(doc, AssemblyManagerConstants.OriginalAssembliesRootLayer, Color.DarkGray);
+        EnsureLayer(doc, AssemblyManagerConstants.CopiedComponentsRootLayer, Color.DarkGray);
+        EnsureLayer(doc, AssemblyManagerConstants.PartsRootLayer, Color.DarkGray);
         EnsureLayer(doc, AssemblyManagerConstants.HardwareRootLayer, Color.DarkGray);
         EnsureLayer(doc, AssemblyManagerConstants.AnnotationRootLayer, Color.DarkGray);
     }
@@ -241,38 +242,58 @@ public sealed class LayerService
             .Split(new[] { "::" }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
-    public static string ShopAssembly(string assemblyName)
+    public static string OriginalAssembly(string assemblyName)
     {
-        return $"{AssemblyManagerConstants.ShopRootLayer}::{assemblyName}";
+        return $"{AssemblyManagerConstants.OriginalAssembliesRootLayer}::{assemblyName}";
     }
 
-    public static string ShopComponent(string assemblyName, string componentName)
+    public static string OriginalComponent(string assemblyName, string componentName)
     {
-        return $"{ShopAssembly(assemblyName)}::{componentName}";
+        return $"{OriginalAssembly(assemblyName)}::{componentName}";
     }
 
-    public static string ShopPart(string assemblyName, string componentName, string partName)
+    public static string OriginalPart(string assemblyName, string componentName, string partName)
     {
-        return $"{ShopComponent(assemblyName, componentName)}::{partName}";
+        return $"{OriginalComponent(assemblyName, componentName)}::{partName}";
     }
 
-    public static string CamAssembly(string assemblyName)
+    public static string PartsAssembly(string assemblyName)
     {
-        return $"{AssemblyManagerConstants.CamRootLayer}::{assemblyName}";
+        return $"{AssemblyManagerConstants.PartsRootLayer}::{assemblyName}";
     }
 
-    public static string CamPart(string assemblyName, string partName)
+    public static string PartsPart(string assemblyName, string partName)
     {
-        return $"{CamAssembly(assemblyName)}::{partName}";
+        return $"{PartsAssembly(assemblyName)}::{partName}";
     }
 
-    public static string DrawingsAssembly(string assemblyName)
+    public static string CopiedComponentsAssembly(string assemblyName)
     {
-        return $"{AssemblyManagerConstants.DrawingsRootLayer}::{assemblyName}";
+        return $"{AssemblyManagerConstants.CopiedComponentsRootLayer}::{assemblyName}";
     }
 
-    public static string DrawingsPart(string assemblyName, string componentName, string partName)
+    public static string CopiedComponentPart(string assemblyName, string componentName, string partName)
     {
-        return $"{DrawingsAssembly(assemblyName)}::{componentName}::{partName}";
+        return $"{CopiedComponentsAssembly(assemblyName)}::{componentName}::{partName}";
+    }
+
+    public static string LegacyOriginalAssembly(string assemblyName)
+    {
+        return $"{AssemblyManagerConstants.LegacyShopRootLayer}::{assemblyName}";
+    }
+
+    public static string LegacyOriginalPart(string assemblyName, string componentName, string partName)
+    {
+        return $"{LegacyOriginalAssembly(assemblyName)}::{componentName}::{partName}";
+    }
+
+    public static string LegacyPartsAssembly(string assemblyName)
+    {
+        return $"{AssemblyManagerConstants.LegacyCamRootLayer}::{assemblyName}";
+    }
+
+    public static string LegacyCopiedComponentsAssembly(string assemblyName)
+    {
+        return $"{AssemblyManagerConstants.LegacyDrawingsRootLayer}::{assemblyName}";
     }
 }

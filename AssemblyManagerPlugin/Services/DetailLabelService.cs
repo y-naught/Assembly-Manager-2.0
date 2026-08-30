@@ -1,3 +1,4 @@
+using AssemblyManagerPlugin.Core;
 using Rhino;
 using Rhino.Display;
 using Rhino.DocObjects;
@@ -26,8 +27,10 @@ public sealed class DetailLabelService
         if (detail is null)
             throw new InvalidOperationException("Selected object is not a layout detail.");
 
-        var targetRoot = labelLevel == DetailLabelLevel.Component ? "DRAWINGS" : "SHOP";
-        var objects = GetObjectsUnderRoot(doc, targetRoot)
+        var targetRoots = labelLevel == DetailLabelLevel.Component
+            ? new[] { AssemblyManagerConstants.CopiedComponentsRootLayer, AssemblyManagerConstants.LegacyDrawingsRootLayer }
+            : new[] { AssemblyManagerConstants.OriginalAssembliesRootLayer, AssemblyManagerConstants.LegacyShopRootLayer };
+        var objects = GetObjectsUnderRoots(doc, targetRoots)
             .Where(obj => IsVisibleInDetail(detail, obj))
             .ToList();
 
@@ -83,7 +86,7 @@ public sealed class DetailLabelService
         return count;
     }
 
-    private IEnumerable<RhinoObject> GetObjectsUnderRoot(RhinoDoc doc, string rootLayerName)
+    private static IEnumerable<RhinoObject> GetObjectsUnderRoots(RhinoDoc doc, IReadOnlyCollection<string> rootLayerNames)
     {
         var settings = new ObjectEnumeratorSettings
         {
@@ -96,7 +99,8 @@ public sealed class DetailLabelService
         foreach (var obj in doc.Objects.GetObjectList(settings))
         {
             var layer = doc.Layers[obj.Attributes.LayerIndex];
-            if (layer is not null && layer.FullPath.StartsWith(rootLayerName + "::", StringComparison.OrdinalIgnoreCase))
+            if (layer is not null && rootLayerNames.Any(rootLayerName =>
+                    layer.FullPath.StartsWith(rootLayerName + "::", StringComparison.OrdinalIgnoreCase)))
                 yield return obj;
         }
     }

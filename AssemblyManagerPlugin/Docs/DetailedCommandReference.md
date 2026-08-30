@@ -32,9 +32,9 @@ What it does:
 - Passes marked hardware through without analyzing it as sheet parts.
 - Creates unique part records from geometry fingerprints plus assigned material.
 - Creates component records from the parts and hardware in each group.
-- Copies generated geometry to `SHOP::<assembly>`.
-- Creates component and part layers under `SHOP`.
-- Stores source object references so generated `SHOP` geometry can be refreshed later.
+- Copies generated geometry to `ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::<assembly>`.
+- Creates component and part layers under `ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES`.
+- Stores source object references so generated `ORIGINAL ASSEMBLIES` geometry can be refreshed later.
 - Saves assembly metadata in the Rhino document.
 
 Important behavior:
@@ -51,9 +51,9 @@ It removes assembly metadata, generated objects, generated groups, and the manag
 
 ### `RefreshAssemblyReferences`
 
-Refreshes generated `SHOP` geometry from the original source objects.
+Refreshes generated `ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES` geometry from the original source objects.
 
-Use this when source geometry has been edited after assembly creation and you want generated `SHOP` geometry updated from those stored references. This is not a replacement for every future reference/update feature, but it is the first working source-refresh path.
+Use this when source geometry has been edited after assembly creation and you want generated `ORIGINAL ASSEMBLIES` geometry updated from those stored references. This is not a replacement for every future reference/update feature, but it is the first working source-refresh path.
 
 ## Hardware
 
@@ -74,7 +74,7 @@ After import, you can copy the block instance in Rhino. Copies remain recognizab
 Important behavior:
 
 - Marked hardware is carried through assembly creation and BOM generation.
-- Marked hardware is copied into `SHOP::<assembly>::<component>::<hardware name>`.
+- Marked hardware is copied into `ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::<assembly>::<component>::<hardware name>`.
 - Marked hardware is copied with drawing components through `CopyOrientComponents`.
 - Ordinary blocks that were not imported or marked as hardware are analyzed like regular model geometry.
 
@@ -145,7 +145,7 @@ This is useful for cleanup, but the preferred workflow is still to assign materi
 
 ### `LayPartsFlat`
 
-Lays one representative of each unique part flat onto `CAM::<assembly>`.
+Lays one representative of each unique part flat onto `ASSEMBLY MANAGER::PARTS::<assembly>`.
 
 What it does:
 
@@ -213,11 +213,11 @@ The command regenerates the material estimate and BOM before writing the CSV, so
 
 ### `CopyOrientComponents`
 
-Copies one representative of each component type to `DRAWINGS::<assembly>`.
+Copies one representative of each component type to `ASSEMBLY MANAGER::COPIED COMPONENTS::<assembly>`.
 
 Use this for drawing views and manual documentation setup. The copied geometry is intended to be moved, rotated, and edited for drawing presentation.
 
-Do not treat `SHOP` geometry the same way. `SHOP` is Gazelle-managed output and is used by other features. If you need to change the design, edit the source model and refresh or recreate the assembly.
+Do not treat `ORIGINAL ASSEMBLIES` geometry the same way. `ORIGINAL ASSEMBLIES` is Gazelle-managed output and is used by other features. If you need to change the design, edit the source model and refresh or recreate the assembly.
 
 ### `NewLayout`
 
@@ -248,8 +248,8 @@ Adds text-dot labels for objects visible in a selected detail.
 
 Options:
 
-- `Assembly`: looks at `SHOP` geometry and labels visible component groups.
-- `Component`: looks at `DRAWINGS` geometry and labels visible part layers.
+- `Assembly`: looks at `ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES` geometry and labels visible component groups.
+- `Component`: looks at `ASSEMBLY MANAGER::COPIED COMPONENTS` geometry and labels visible part layers.
 
 ### `LabelPart`
 

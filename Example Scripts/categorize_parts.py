@@ -282,17 +282,17 @@ def sort_parts(volume_categorized_indices, assembly_parts, label_prefix, target_
 def sort_parts_to_components(layers, component_names, assembly_name):
     for component in component_names:
         if(component[0] != "unsorted"):
-            layer_string = "SHOP::" + assembly_name + "::" + component[0]
+            layer_string = "ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assembly_name + "::" + component[0]
             rs.AddLayer(layer_string)
     for part_layer in layers:
-        layer_string = "SHOP::" + assembly_name + "::unsorted::" + part_layer
+        layer_string = "ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assembly_name + "::unsorted::" + part_layer
         parts_on_layer = rs.ObjectsByLayer(layer_string)
         for part in parts_on_layer:
             groups = rs.ObjectGroups(part)
             if(groups[0] != None):
                 for i in range(len(component_names)):
                     if(groups[0] == component_names[i][1]):
-                        component_layer = "SHOP::" + assembly_name + "::" + component_names[i][0] + "::" + part_layer
+                        component_layer = "ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assembly_name + "::" + component_names[i][0] + "::" + part_layer
                         layer_color = rs.LayerColor(layer_string)
                         layer_exists = rs.LayerId(component_layer)
                         if(layer_exists == None):
@@ -300,13 +300,13 @@ def sort_parts_to_components(layers, component_names, assembly_name):
                         rs.ObjectLayer(part, layer=component_layer)
             
 def purge_unsorted(assembly_name):
-    unsorted_layer_string = "SHOP::" + assembly_name + "::unsorted"
+    unsorted_layer_string = "ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assembly_name + "::unsorted"
     unsorted_objects = rs.ObjectsByLayer(unsorted_layer_string)
     if(len(unsorted_objects) == 0):
         rs.PurgeLayer(unsorted_layer_string)
 
 def set_document_data(assembly_name, component_details):
-    assembly_layer_string = "SHOP::" + assembly_name
+    assembly_layer_string = "ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assembly_name
     component_layers = rs.LayerChildren(assembly_layer_string)
     component_list = strip_layer_to_child(component_layers)
     assembly_data = ca.getAssemblyData(assembly_name)
@@ -367,7 +367,7 @@ def consolidate_components(assembly_name, component_names):
     # extract each component with a group and list the parts
     component_groups_with_parts = []
     for component in new_component_groups:
-        component_layer_string = "SHOP::" + assembly_name + "::" + component[0]
+        component_layer_string = "ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assembly_name + "::" + component[0]
         if(component[1] != None):
             part_layers = rs.LayerChildren(component_layer_string)
 
@@ -438,11 +438,11 @@ def consolidate_components(assembly_name, component_names):
     for component_set in full_component_set:
         first_component = component_set[0]
         if(len(component_set) > 1):
-            target_component_string = "SHOP::" + assembly_name + "::" + first_component
+            target_component_string = "ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assembly_name + "::" + first_component
             # for remaining components in this set, consolidate layers to first component
             for i in range(1, len(component_set)):
                 component_identifier = component_set[i]
-                current_component_string = "SHOP::" + assembly_name + "::" + component_identifier
+                current_component_string = "ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assembly_name + "::" + component_identifier
                 part_layers = rs.LayerChildren(current_component_string)
                 for part in part_layers:
                     part_identifier = strip_single_layer_to_child(part)
@@ -460,8 +460,8 @@ def consolidate_components(assembly_name, component_names):
 
     for i in range(len(consolidated_component_names)):
         new_component_name = prefix + str(i+1).zfill(2)
-        old_component_layer_string = "SHOP::" + assembly_name + "::" + consolidated_component_names[i]
-        new_component_layer_string = "SHOP::" + assembly_name + "::" + new_component_name
+        old_component_layer_string = "ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assembly_name + "::" + consolidated_component_names[i]
+        new_component_layer_string = "ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assembly_name + "::" + new_component_name
         new_layer = rs.RenameLayer(old_component_layer_string, new_component_name)
         new_component_names.append(new_component_name)
 
@@ -550,7 +550,7 @@ def generate_parts(part_label_prefix, component_prefix, assembly_name, translati
     parts = getParts()
     group_list = get_group_list(parts)
     component_names = generate_components(group_list, "TEMP_" + component_prefix, assembly_name)
-    initial_component_layer = "SHOP::" + assembly_name + "::" + component_names[0][0]
+    initial_component_layer = "ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assembly_name + "::" + component_names[0][0]
     categorized_part_indices = categorizeParts(parts)
     new_parts_translation = create_translation(parts, translation_multiplier, translation_multiplier)
     layers = sort_parts(categorized_part_indices, parts, part_label_prefix, initial_component_layer, new_parts_translation)

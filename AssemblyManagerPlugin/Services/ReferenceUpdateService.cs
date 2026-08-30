@@ -23,7 +23,11 @@ public sealed class ReferenceUpdateService
             ?? throw new InvalidOperationException($"Assembly '{assemblyName}' was not found.");
 
         var refreshed = 0;
-        foreach (var reference in assembly.GeometryReferences.Where(r => r.TargetRole == "SHOP"))
+        foreach (var reference in assembly.GeometryReferences.Where(r =>
+                     string.Equals(
+                         r.TargetRole,
+                         AssemblyManagerConstants.GeneratedAssemblyReferenceRole,
+                         StringComparison.OrdinalIgnoreCase)))
         {
             var source = doc.Objects.FindId(reference.SourceObjectId);
             var target = doc.Objects.FindId(reference.TargetObjectId);
@@ -45,7 +49,7 @@ public sealed class ReferenceUpdateService
         {
             CommandName = "RefreshAssemblyReferences",
             AssemblyName = assemblyName,
-            Summary = $"Refreshed {refreshed} generated SHOP object(s) from source geometry."
+            Summary = $"Refreshed {refreshed} generated original-assembly object(s) from source geometry."
         });
         doc.Views.Redraw();
         return refreshed;

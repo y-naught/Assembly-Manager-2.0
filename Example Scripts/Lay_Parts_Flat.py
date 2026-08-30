@@ -34,12 +34,12 @@ import Rhino
 
 
 
-def construct_shop_string(assembly_name, component_name):
-    layer_string = "SHOP::" + assembly_name + "::" + component_name
+def construct_original_assembly_string(assembly_name, component_name):
+    layer_string = "ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assembly_name + "::" + component_name
     return layer_string
 
-def construct_cam_string(assembly_name, component_name, part_name):
-    layer_string = "CAM::" + assembly_name + "::" + component_name + "::" + part_name
+def construct_parts_string(assembly_name, part_name):
+    layer_string = "ASSEMBLY MANAGER::PARTS::" + assembly_name + "::" + part_name
     return layer_string
 
 def extract_part_label(layer):
@@ -54,7 +54,7 @@ def extract_parts(assembly_name):
     all_parts = []
     parts_set = set()
     for component in components:
-        component_layer_string = "SHOP::" + assembly_name + "::" + component
+        component_layer_string = "ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assembly_name + "::" + component
         part_layers = rs.LayerChildren(component)
         all_parts.append(part_layers)
         print(part_layers)
@@ -89,7 +89,7 @@ def get_part_counts(assembly_name):
     all_parts = []
     parts_set = set()
     for component in components:
-        component_layer_string = "SHOP::" + assembly_name + "::" + component
+        component_layer_string = "ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assembly_name + "::" + component
         part_layers = rs.LayerChildren(component)
         all_parts.append(part_layers)
         for single_part in part_layers:
@@ -118,9 +118,9 @@ def get_part_counts(assembly_name):
     return part_counts
 
 
-def create_CAM_layers(assembly_name):
+def create_parts_layers(assembly_name):
     # create layers
-    new_layer_string = "CAM::" + assembly_name
+    new_layer_string = "ASSEMBLY MANAGER::PARTS::" + assembly_name
     print(new_layer_string)
     if(rs.IsLayer(new_layer_string)):
         print("Layer set exists")
@@ -129,12 +129,12 @@ def create_CAM_layers(assembly_name):
         rs.AddLayer(new_layer_string)
 
 
-def assign_moved_parts_to_CAM_layers(parts, assembly_name):
+def assign_moved_parts_to_parts_layers(parts, assembly_name):
     for part in parts:
         current_layer = rs.ObjectLayer(part)
         layer_color = rs.LayerColor(current_layer)
         part_label = extract_part_label(current_layer)
-        layer_string = "CAM::" + assembly_name + "::" + part_label + "::3D"
+        layer_string = "ASSEMBLY MANAGER::PARTS::" + assembly_name + "::" + part_label + "::3D"
         new_layer = rs.AddLayer(layer_string)
         rs.LayerColor(new_layer, layer_color)
         rs.ObjectLayer(part, new_layer)
@@ -159,8 +159,8 @@ def generate_text(assembly_name, counts, materials, anchor_points):
 
 def add_text_object(assembly_name, part_label, material, num_parts, anchor_point, text_height):
     print("Creating text object for ", part_label)
-    cam_layer = "CAM::" + assembly_name + "::" + part_label
-    text_layer_string = cam_layer + "::text"
+    parts_layer = "ASSEMBLY MANAGER::PARTS::" + assembly_name + "::" + part_label
+    text_layer_string = parts_layer + "::text"
     text_layer = rs.AddLayer(text_layer_string)
     text = part_label + "\n" + "QTY : " + str(num_parts) + "\n" + material
     text_object = rs.AddText(text, anchor_point, height=text_height)
@@ -336,11 +336,11 @@ def remove_parts_from_groups(parts):
 
 # runner function called externally by the assembly manager
 def lay_parts_flat(assembly_name):
-    assembly_layer_string = "SHOP::" + assembly_name
+    assembly_layer_string = "ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::" + assembly_name
     unique_parts = extract_parts(assembly_layer_string)
     [moved_parts, anchor_points, part_thicknesses, frame_points, old_anchors] = isolate_orient_parts(unique_parts)
-    create_CAM_layers(assembly_name)
-    assign_moved_parts_to_CAM_layers(moved_parts, assembly_name)
+    create_parts_layers(assembly_name)
+    assign_moved_parts_to_parts_layers(moved_parts, assembly_name)
     counts = get_part_counts(assembly_layer_string)
     text_objects = generate_text(assembly_name, counts, part_thicknesses, anchor_points)
     remove_parts_from_groups(moved_parts)

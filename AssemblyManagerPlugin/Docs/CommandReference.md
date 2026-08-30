@@ -9,13 +9,13 @@ This is the fast version of the command list. For deeper notes, prompts, side ef
 | `AssemblyManager` | Opens the main Assembly Manager window for creating assemblies, reviewing parts/components, laying parts flat, making drawing copies, estimating materials, and generating BOM data. |
 | `CreateAssembly` | Creates a managed assembly from selected grouped model geometry. This is the command-line version of the Create Assembly button. |
 | `RemoveAssembly` | Deletes a managed assembly, its generated geometry, generated groups, and managed layer trees. |
-| `RefreshAssemblyReferences` | Rebuilds generated `SHOP` geometry from stored source-object references. |
+| `RefreshAssemblyReferences` | Rebuilds generated `ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES` geometry from stored source-object references. |
 
 ## Manufacturing
 
 | Command | What it does |
 | --- | --- |
-| `LayPartsFlat` | Lays one representative of each unique part onto `CAM::<assembly>`, grouped by material and thickness. |
+| `LayPartsFlat` | Lays one representative of each unique part onto `ASSEMBLY MANAGER::PARTS::<assembly>`, grouped by material and thickness. |
 | `EstimateMaterials` | Estimates required sheet counts by material, material thickness, and available sheet stock. |
 | `PlaceMaterialEstimate` | Places the current material estimate as a grouped table in layout space. |
 | `ExportMaterialEstimate` | Exports the material estimate as CSV or JSON. |
@@ -42,7 +42,7 @@ This is the fast version of the command list. For deeper notes, prompts, side ef
 
 | Command | What it does |
 | --- | --- |
-| `CopyOrientComponents` | Copies one representative of each component type to `DRAWINGS::<assembly>` and optimizes the plan rotation for drawing work. |
+| `CopyOrientComponents` | Copies one representative of each component type to `ASSEMBLY MANAGER::COPIED COMPONENTS::<assembly>` and optimizes the plan rotation for drawing work. |
 | `NewLayout` | Imports the saved layout template, prompting for the template file only when needed. |
 | `SetProjectInfo` | Saves project fields to document string keys used by the layout template. |
 | `LabelDetail` | Adds text-dot labels for components or parts visible in a selected detail. |

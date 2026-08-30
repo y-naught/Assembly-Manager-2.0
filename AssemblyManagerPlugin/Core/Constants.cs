@@ -8,11 +8,20 @@ public static class AssemblyManagerConstants
     public const string ProjectInfoSection = "AssemblyManager.ProjectInfo";
     public const string ActionHistorySection = "AssemblyManager.ActionHistory";
 
-    public const string ShopRootLayer = "SHOP";
-    public const string CamRootLayer = "CAM";
-    public const string DrawingsRootLayer = "DRAWINGS";
+    public const string AssemblyManagerRootLayer = "ASSEMBLY MANAGER";
+    public const string OriginalAssembliesRootLayer = AssemblyManagerRootLayer + "::ORIGINAL ASSEMBLIES";
+    public const string CopiedComponentsRootLayer = AssemblyManagerRootLayer + "::COPIED COMPONENTS";
+    public const string PartsRootLayer = AssemblyManagerRootLayer + "::PARTS";
+    public const string LegacyShopRootLayer = "SHOP";
+    public const string LegacyDrawingsRootLayer = "DRAWINGS";
+    public const string LegacyCamRootLayer = "CAM";
     public const string HardwareRootLayer = "HARDWARE";
     public const string AnnotationRootLayer = "ANNO";
+
+    // These values are persisted metadata roles, not Rhino layer names. Keep them stable so
+    // reference refresh continues to work in documents created by earlier Gazelle versions.
+    public const string GeneratedAssemblyReferenceRole = "SHOP";
+    public const string GeneratedHardwareReferenceRole = "SHOP_HARDWARE";
 
     public const string ObjectRoleUserString = "AssemblyManager.Role";
     public const string HardwareRole = "Hardware";

@@ -44,12 +44,12 @@ def get_label_level():
     label_level = rs.PopupMenu(items=menu_items)
     return label_level
 
-# Gets all parts in either the drawings or shops parent layer
+# Gets all parts in either the COPIED COMPONENTS or ORIGINAL ASSEMBLIES branch
 def get_all_drawing_objects(label_level):
     if(label_level == 1):
-        drawing_assemblies = rs.LayerChildren("DRAWINGS")
+        drawing_assemblies = rs.LayerChildren("ASSEMBLY MANAGER::COPIED COMPONENTS")
     else:
-        drawing_assemblies = rs.LayerChildren("SHOP")
+        drawing_assemblies = rs.LayerChildren("ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES")
     
     drawing_components = []
     for assembly in drawing_assemblies:

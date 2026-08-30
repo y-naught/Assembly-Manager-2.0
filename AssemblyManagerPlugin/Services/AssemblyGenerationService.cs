@@ -57,10 +57,10 @@ public sealed class AssemblyGenerationService
 
         progress.Update(1, "Creating assembly layers");
         _layers.EnsureRootLayers(doc);
-        _layers.EnsureLayer(doc, LayerService.ShopAssembly(options.AssemblyName));
-        _layers.EnsureLayer(doc, LayerService.ShopComponent(options.AssemblyName, "unsorted"));
-        _layers.EnsureLayer(doc, LayerService.CamAssembly(options.AssemblyName));
-        _layers.EnsureLayer(doc, LayerService.DrawingsAssembly(options.AssemblyName));
+        _layers.EnsureLayer(doc, LayerService.OriginalAssembly(options.AssemblyName));
+        _layers.EnsureLayer(doc, LayerService.OriginalComponent(options.AssemblyName, "unsorted"));
+        _layers.EnsureLayer(doc, LayerService.PartsAssembly(options.AssemblyName));
+        _layers.EnsureLayer(doc, LayerService.CopiedComponentsAssembly(options.AssemblyName));
 
         progress.Update(2, "Expanding selected groups");
         var expandedSourceObjectIds = ExpandSelectedObjectsToGroups(doc, sourceObjectIds);
@@ -115,7 +115,7 @@ public sealed class AssemblyGenerationService
         {
             var partName = $"{options.PartPrefix}{partIndex + 1:00}";
             var color = PartColorForIndex(partIndex, assemblySettings.ColorizeParts);
-            var partLayer = LayerService.ShopPart(options.AssemblyName, "unsorted", partName);
+            var partLayer = LayerService.OriginalPart(options.AssemblyName, "unsorted", partName);
             var layerIndex = _layers.EnsureLayerIndex(doc, partLayer, color);
 
             var partRecord = new PartRecord
@@ -152,7 +152,7 @@ public sealed class AssemblyGenerationService
                     PartName = partName,
                     SourceObjectId = candidate.SourceObjectId,
                     TargetObjectId = generatedId,
-                    TargetRole = "SHOP",
+                    TargetRole = AssemblyManagerConstants.GeneratedAssemblyReferenceRole,
                     SourceToTargetTransform = TransformRecord.FromTransform(assemblyTranslation)
                 });
 
@@ -173,7 +173,7 @@ public sealed class AssemblyGenerationService
         progress.Update(6, "Consolidating equivalent components");
         ConsolidateComponents(doc, options, assembly, componentCandidates, assemblySettings.ColorizeParts);
         progress.Update(7, "Cleaning up temporary layers");
-        CleanupLayerTreeIfEmpty(doc, LayerService.ShopComponent(options.AssemblyName, "unsorted"));
+        CleanupLayerTreeIfEmpty(doc, LayerService.OriginalComponent(options.AssemblyName, "unsorted"));
 
         progress.Update(8, "Saving assembly data");
         store.Assemblies.Add(assembly);
@@ -263,13 +263,13 @@ public sealed class AssemblyGenerationService
                 _layers.MoveObjectToLayer(
                     doc,
                     candidate.GeneratedObjectId,
-                    LayerService.ShopPart(options.AssemblyName, component.TemporaryName, candidate.PartName),
+                    LayerService.OriginalPart(options.AssemblyName, component.TemporaryName, candidate.PartName),
                         partColor);
             }
 
             foreach (var hardware in hardwareGroups.GetValueOrDefault(groupKey) ?? new List<HardwareCandidate>())
             {
-                var generatedId = CopyHardwareToShopLayer(doc, options, component.TemporaryName, hardware, assemblyTranslation);
+                var generatedId = CopyHardwareToOriginalAssemblyLayer(doc, options, component.TemporaryName, hardware, assemblyTranslation);
                 if (generatedId == Guid.Empty)
                     continue;
 
@@ -282,7 +282,7 @@ public sealed class AssemblyGenerationService
                     PartName = hardware.LayerName,
                     SourceObjectId = hardware.SourceObjectId,
                     TargetObjectId = generatedId,
-                    TargetRole = "SHOP_HARDWARE",
+                    TargetRole = AssemblyManagerConstants.GeneratedHardwareReferenceRole,
                     SourceToTargetTransform = TransformRecord.FromTransform(assemblyTranslation)
                 });
             }
@@ -293,7 +293,7 @@ public sealed class AssemblyGenerationService
             tempIndex++;
         }
 
-        _layers.TryDeleteLayerIfEmpty(doc, LayerService.ShopComponent(options.AssemblyName, "unsorted"));
+        _layers.TryDeleteLayerIfEmpty(doc, LayerService.OriginalComponent(options.AssemblyName, "unsorted"));
         return components;
     }
 
@@ -350,7 +350,7 @@ public sealed class AssemblyGenerationService
                     _layers.MoveObjectToLayer(
                         doc,
                         part.GeneratedObjectId,
-                        LayerService.ShopPart(options.AssemblyName, componentName, part.PartName),
+                        LayerService.OriginalPart(options.AssemblyName, componentName, part.PartName),
                         color);
                     var reference = assembly.GeometryReferences.FirstOrDefault(r => r.TargetObjectId == part.GeneratedObjectId);
                     if (reference is not null)
@@ -365,7 +365,7 @@ public sealed class AssemblyGenerationService
                     _layers.MoveObjectToLayer(
                         doc,
                         hardware.GeneratedObjectId,
-                        LayerService.ShopPart(options.AssemblyName, componentName, hardware.LayerName),
+                        LayerService.OriginalPart(options.AssemblyName, componentName, hardware.LayerName),
                         Color.DarkGray);
                     var reference = assembly.GeometryReferences.FirstOrDefault(r => r.TargetObjectId == hardware.GeneratedObjectId);
                     if (reference is not null)
@@ -426,7 +426,7 @@ public sealed class AssemblyGenerationService
 
     private void CleanupTemporaryComponentLayer(RhinoDoc doc, string assemblyName, string temporaryName)
     {
-        CleanupLayerTreeIfEmpty(doc, LayerService.ShopComponent(assemblyName, temporaryName));
+        CleanupLayerTreeIfEmpty(doc, LayerService.OriginalComponent(assemblyName, temporaryName));
     }
 
     private void AddPartCandidatesFromSourceObject(
@@ -513,7 +513,7 @@ public sealed class AssemblyGenerationService
         };
     }
 
-    private Guid CopyHardwareToShopLayer(
+    private Guid CopyHardwareToOriginalAssemblyLayer(
         RhinoDoc doc,
         CreateAssemblyOptions options,
         string componentName,
@@ -529,7 +529,7 @@ public sealed class AssemblyGenerationService
         var attributes = sourceObject.Attributes.Duplicate();
         attributes.LayerIndex = _layers.EnsureLayerIndex(
             doc,
-            LayerService.ShopPart(options.AssemblyName, componentName, hardware.LayerName),
+            LayerService.OriginalPart(options.AssemblyName, componentName, hardware.LayerName),
             Color.DarkGray);
         attributes.Name = string.IsNullOrWhiteSpace(attributes.Name) ? hardware.Name : attributes.Name;
         attributes.RemoveFromAllGroups();
