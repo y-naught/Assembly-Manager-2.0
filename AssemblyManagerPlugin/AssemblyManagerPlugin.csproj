@@ -11,6 +11,7 @@
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <AssemblyName>Gazelle</AssemblyName>
     <TargetExt>.rhp</TargetExt>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <NoWarn>NU1701</NoWarn>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
@@ -18,7 +19,7 @@
   
   <PropertyGroup>
     <!-- Specifies information for Assembly and Yak -->
-    <Version>1.0.2</Version>
+    <Version>1.0.3</Version>
     <Title>Gazelle</Title>
     <Company>Greg King</Company>
     <Description>Assembly, part, fabrication documentation, and manufacturing prep tools for Rhino.</Description>
