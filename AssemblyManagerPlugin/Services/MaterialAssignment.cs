@@ -5,6 +5,37 @@ namespace AssemblyManagerPlugin.Services;
 
 public static class MaterialAssignment
 {
+    public static readonly string[] MetadataKeys =
+    {
+        AssemblyManagerConstants.MaterialIdUserString,
+        AssemblyManagerConstants.MaterialNameUserString,
+        AssemblyManagerConstants.MaterialBaseIdUserString,
+        AssemblyManagerConstants.MaterialBaseNameUserString,
+        AssemblyManagerConstants.MaterialShapeNameUserString,
+        AssemblyManagerConstants.MaterialShapeTypeUserString
+    };
+
+    /// <summary>Copy only material metadata, including clearing a previous assignment.</summary>
+    public static bool Copy(ObjectAttributes source, ObjectAttributes target)
+    {
+        var changed = false;
+        foreach (var key in MetadataKeys)
+        {
+            var value = source.GetUserString(key);
+            if (string.Equals(value ?? string.Empty, target.GetUserString(key) ?? string.Empty, StringComparison.Ordinal))
+                continue;
+            target.SetUserString(key, value);
+            changed = true;
+        }
+        return changed;
+    }
+
+    public static string GetParentIdForStoredAssignment(string materialId)
+    {
+        var parsed = TryParseLegacyAssignmentBaseId(materialId);
+        return NormalizeMaterialIdForCategory(string.IsNullOrWhiteSpace(parsed) ? materialId : parsed);
+    }
+
     public static void Set(ObjectAttributes attributes, MaterialDefinitionRecord material)
     {
         attributes.SetUserString(AssemblyManagerConstants.MaterialIdUserString, material.Id);

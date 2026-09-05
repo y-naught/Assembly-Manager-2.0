@@ -6,7 +6,7 @@ namespace AssemblyManagerPlugin.Services;
 
 public sealed class PluginSettingsService
 {
-    private const int CurrentSchemaVersion = 8;
+    private const int CurrentSchemaVersion = 9;
     private const double DefaultLengthTolerance = 0.001;
     private static readonly double[] PreviousDefaultLengthTolerances = { 0.01, 0.005 };
     private const double DefaultAreaTolerance = 0.01;
@@ -18,6 +18,12 @@ public sealed class PluginSettingsService
         WriteIndented = false,
         PropertyNameCaseInsensitive = true
     };
+    private bool? _automaticPropagationEnabled;
+
+    // Rhino can raise Idle frequently. Do not deserialize the complete material library and
+    // settings record on every idle tick merely to read this one preference.
+    public bool AutomaticallyPropagateChangesInAssembly =>
+        _automaticPropagationEnabled ??= Load().AssemblyManager.AutomaticallyPropagateChangesInAssembly;
 
     public PluginSettingsRecord Load()
     {
@@ -39,6 +45,7 @@ public sealed class PluginSettingsService
 
     public void Save(PluginSettingsRecord record)
     {
+        _automaticPropagationEnabled = record.AssemblyManager.AutomaticallyPropagateChangesInAssembly;
         record.UpdatedAt = DateTimeOffset.UtcNow;
         var json = JsonSerializer.Serialize(record, JsonOptions);
         var plugin = global::AssemblyManagerPlugin.AssemblyManagerPlugin.Instance;
@@ -58,7 +65,7 @@ public sealed class PluginSettingsService
         if (string.IsNullOrWhiteSpace(record.AssemblyManager.DefaultComponentPrefix))
             record.AssemblyManager.DefaultComponentPrefix = "C";
 
-        if (originalSchemaVersion < CurrentSchemaVersion
+        if (originalSchemaVersion < 8
             && PreviousDefaultLengthTolerances.Any(value => Math.Abs(record.AssemblyManager.CategorizationLengthTolerance - value) < 0.0000001))
         {
             record.AssemblyManager.CategorizationLengthTolerance = DefaultLengthTolerance;

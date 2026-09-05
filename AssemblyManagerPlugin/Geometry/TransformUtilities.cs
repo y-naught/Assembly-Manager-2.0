@@ -28,6 +28,22 @@ public static class TransformUtilities
         return Transform.PlaneToPlane(sourcePlane, targetPlane);
     }
 
+    public static Transform RotateLongDimensionToY(Brep brep)
+    {
+        var bbox = brep.GetBoundingBox(true);
+        if (!bbox.IsValid)
+            return Transform.Identity;
+
+        var xLength = Math.Abs(bbox.Max.X - bbox.Min.X);
+        var yLength = Math.Abs(bbox.Max.Y - bbox.Min.Y);
+        if (xLength <= yLength)
+            return Transform.Identity;
+
+        var rotation = Transform.Rotation(Math.PI / 2.0, Vector3d.ZAxis, bbox.Center);
+        brep.Transform(rotation);
+        return rotation;
+    }
+
     public static BoundingBox GetBoundingBox(IEnumerable<Guid> objectIds, Rhino.RhinoDoc doc)
     {
         var bbox = BoundingBox.Empty;

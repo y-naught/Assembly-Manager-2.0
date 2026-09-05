@@ -21,6 +21,16 @@ public sealed class AssemblyManagerDialog : Dialog<bool>
     private readonly TextBox _componentPrefix = new() { Text = "C" };
     private readonly TextBox _assemblySummary = new() { ReadOnly = true };
     private readonly TextBox _componentQuantity = new() { ReadOnly = true };
+    private readonly Label _linkIssueCount = new() { Font = SystemFonts.Bold(), Wrap = WrapMode.Word };
+    private readonly Label _documentIssueCount = new() { Wrap = WrapMode.Word };
+    private readonly TextArea _linkIssueDetails = new() { ReadOnly = true, Wrap = true, Height = 150 };
+    private readonly Label _undoHealthCount = new() { Wrap = WrapMode.Word };
+    private readonly TextArea _undoHealthDetails = new() { ReadOnly = true, Wrap = true, Height = 75 };
+    private AssemblyStore _displayedStore = new();
+    private string? _lastStoreJson;
+    private string _lastUndoHealthSignature = string.Empty;
+    private bool _refreshingView;
+    private bool _observingChanges;
 
     public AssemblyManagerDialog(RhinoDoc doc, ServiceFactory services)
     {
@@ -41,6 +51,9 @@ public sealed class AssemblyManagerDialog : Dialog<bool>
         ApplyDefaultSettings();
         Content = BuildLayout();
         RefreshAssemblies();
+        Shown += (_, _) => StartObservingChanges();
+        Closed += (_, _) => StopObservingChanges();
+        UnLoad += (_, _) => StopObservingChanges();
     }
 
     private Control BuildLayout()
@@ -57,8 +70,13 @@ public sealed class AssemblyManagerDialog : Dialog<bool>
         var copyOrientButton = new Button { Text = "Copy / Orient Components", Width = 190 };
         copyOrientButton.Click += (_, _) => CopyOrientComponents();
 
-        var refreshRefsButton = new Button { Text = "Refresh References", Width = 155 };
-        refreshRefsButton.Click += (_, _) => RefreshReferences();
+        var refreshRefsButton = new Button
+        {
+            Text = "Update Assembly",
+            Width = 155,
+            ToolTip = "Apply pending linked edits and update this assembly, including its flat parts, quantities, and materials."
+        };
+        refreshRefsButton.Click += (_, _) => UpdateAssembly();
 
         var materialLibraryButton = new Button { Text = "Material Library", Width = 155 };
         materialLibraryButton.Click += (_, _) => ShowMaterialLibrary();
@@ -77,6 +95,13 @@ public sealed class AssemblyManagerDialog : Dialog<bool>
 
         var settingsButton = new Button { Text = "Settings", Width = 155 };
         settingsButton.Click += (_, _) => ShowSettings();
+
+        var refreshIssuesButton = new Button
+        {
+            Text = "Refresh Issues",
+            ToolTip = "Reload link issues and check link health without changing geometry."
+        };
+        refreshIssuesButton.Click += (_, _) => RefreshIssues();
 
         var assemblyLayout = new DynamicLayout
         {
@@ -121,6 +146,17 @@ public sealed class AssemblyManagerDialog : Dialog<bool>
         workflowLayout.AddRow(new Label { Text = "Library and Setup" });
         workflowLayout.AddRow(materialLibraryButton, settingsButton);
 
+        var linkIssuesLayout = new DynamicLayout
+        {
+            Spacing = new Size(8, 6),
+            Padding = new Padding(10)
+        };
+        linkIssuesLayout.AddRow(_linkIssueCount, refreshIssuesButton);
+        linkIssuesLayout.AddRow(_documentIssueCount);
+        linkIssuesLayout.AddRow(_linkIssueDetails);
+        linkIssuesLayout.AddRow(_undoHealthCount);
+        linkIssuesLayout.AddRow(_undoHealthDetails);
+
         var rightLayout = new DynamicLayout
         {
             Spacing = new Size(10, 10),
@@ -128,6 +164,7 @@ public sealed class AssemblyManagerDialog : Dialog<bool>
         };
         rightLayout.AddRow(BuildSection("Components and Parts", contentLayout));
         rightLayout.AddRow(BuildSection("Workflow", workflowLayout));
+        rightLayout.AddRow(BuildSection("Link Issues", linkIssuesLayout));
         rightLayout.AddRow(null);
 
         var root = new DynamicLayout
@@ -159,45 +196,92 @@ public sealed class AssemblyManagerDialog : Dialog<bool>
 
     private void RefreshAssemblies()
     {
-        var store = _services.Repository.Load(_doc);
-        _assemblyList.DataStore = store.Assemblies.Select(a => a.Name).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
-        if (_assemblyList.SelectedIndex < 0 && store.Assemblies.Count > 0)
-            _assemblyList.SelectedIndex = 0;
+        if (_refreshingView)
+            return;
 
-        RefreshComponents();
+        var selectedAssemblyName = _assemblyList.SelectedValue as string;
+        var selectedComponentName = _componentList.SelectedValue as string;
+        var selectedPart = _partList.SelectedValue as string;
+        _refreshingView = true;
+        try
+        {
+            _displayedStore = _services.Repository.Load(_doc);
+            _lastStoreJson = ReadStoreJson();
+            SetListItems(_assemblyList,
+                _displayedStore.Assemblies.Select(a => a.Name).OrderBy(n => n, StringComparer.OrdinalIgnoreCase),
+                selectedAssemblyName);
+            var assembly = SelectedAssembly();
+            SetListItems(_componentList,
+                assembly?.Components.Select(c => c.Name).OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                    ?? Enumerable.Empty<string>(),
+                selectedComponentName);
+            UpdateAssemblySummary(assembly);
+            UpdateLinkIssues(assembly);
+        }
+        finally
+        {
+            _refreshingView = false;
+        }
+
+        RefreshParts(selectedPart);
     }
 
     private void RefreshComponents()
     {
+        if (_refreshingView)
+            return;
+
         var assembly = SelectedAssembly();
         UpdateAssemblySummary(assembly);
-        _componentList.DataStore = assembly?.Components.Select(c => c.Name).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList()
-            ?? new List<string>();
-        if (_componentList.SelectedIndex < 0 && assembly?.Components.Count > 0)
-            _componentList.SelectedIndex = 0;
+        UpdateLinkIssues(assembly);
+        _refreshingView = true;
+        try
+        {
+            SetListItems(_componentList,
+                assembly?.Components.Select(c => c.Name).OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                    ?? Enumerable.Empty<string>(),
+                _componentList.SelectedValue as string);
+        }
+        finally
+        {
+            _refreshingView = false;
+        }
 
         RefreshParts();
     }
 
     private void UpdateAssemblySummary(AssemblyRecord? assembly)
     {
-        _assemblySummary.Text = assembly is null
-            ? string.Empty
-            : $"{assembly.Parts.Count} part(s), {assembly.Components.Count} component type(s), {assembly.Hardware.Count} hardware item(s)";
+        if (assembly is null)
+        {
+            _assemblySummary.Text = string.Empty;
+            _assemblySummary.ToolTip = string.Empty;
+            return;
+        }
+
+        var linkedOutputCount = assembly.LinkGraph.Nodes.Count(node =>
+            !string.Equals(node.Role, AssemblyLinkRoles.Source, StringComparison.OrdinalIgnoreCase));
+        _assemblySummary.Text =
+            $"{assembly.Parts.Count} part(s), {assembly.Components.Count} component type(s), " +
+            $"{assembly.Hardware.Count} hardware item(s), {linkedOutputCount} linked output(s)";
+        _assemblySummary.ToolTip = _assemblySummary.Text;
     }
 
-    private void RefreshParts()
+    private void RefreshParts(string? selectedPart = null)
     {
+        if (_refreshingView)
+            return;
+
         var assembly = SelectedAssembly();
         var component = SelectedComponent(assembly);
         _componentQuantity.Text = component?.Quantity.ToString() ?? string.Empty;
-        _partList.DataStore = component?.PartNames
+        SetListItems(_partList, component?.PartNames
             .Select(partName =>
             {
                 var quantity = component.PartQuantities.TryGetValue(partName, out var count) ? count : 1;
                 return quantity > 1 ? $"{partName} x{quantity}" : partName;
             })
-            .ToList() ?? new List<string>();
+            ?? Enumerable.Empty<string>(), selectedPart ?? _partList.SelectedValue as string);
     }
 
     private AssemblyRecord? SelectedAssembly()
@@ -206,7 +290,163 @@ public sealed class AssemblyManagerDialog : Dialog<bool>
         if (string.IsNullOrWhiteSpace(selectedName))
             return null;
 
-        return _services.Repository.Load(_doc).FindAssembly(selectedName);
+        return _displayedStore.FindAssembly(selectedName);
+    }
+
+    private static void SetListItems(ListBox list, IEnumerable<string> items, string? preferredSelection)
+    {
+        var values = items.ToList();
+        var selectedIndex = values.FindIndex(value =>
+            string.Equals(value, preferredSelection, StringComparison.OrdinalIgnoreCase));
+        list.DataStore = values;
+        list.SelectedIndex = selectedIndex >= 0 ? selectedIndex : values.Count > 0 ? 0 : -1;
+    }
+
+    private void UpdateLinkIssues(AssemblyRecord? assembly)
+    {
+        var conflicts = assembly?.LinkGraph.Conflicts
+            .Where(IsOpenConflict)
+            .OrderBy(conflict => conflict.DetectedAt)
+            .ToList() ?? new List<LinkConflictRecord>();
+        var documentCount = _displayedStore.Assemblies.Sum(item => item.LinkGraph.Conflicts.Count(IsOpenConflict));
+        _linkIssueCount.Text = assembly is null
+            ? "Select an assembly to review its link issues."
+            : $"{conflicts.Count} open link issue(s) — {assembly.Name}";
+        _linkIssueCount.TextColor = conflicts.Count > 0 ? Colors.DarkRed : SystemColors.ControlText;
+        _documentIssueCount.Text = $"{documentCount} open link issue(s) across this document. Details below are for the selected assembly.";
+        _linkIssueDetails.Text = assembly is null
+            ? "No assembly selected."
+            : conflicts.Count == 0
+                ? "No open link issues for this assembly."
+                : string.Join("\n\n", conflicts.Select((conflict, index) => DescribeConflict(assembly, conflict, index + 1)));
+
+        var undoIssues = _services.LinkEvents.GetUndoHealthIssues(_doc);
+        _lastUndoHealthSignature = string.Join("\n", undoIssues);
+        _undoHealthCount.Text = $"{undoIssues.Count} undo / redo health warning(s) — document-wide, separate from link issues";
+        _undoHealthDetails.Text = undoIssues.Count == 0
+            ? "No undo / redo health warnings."
+            : string.Join("\n\n", undoIssues.Select((issue, index) => $"{index + 1}. {issue}"));
+        _undoHealthDetails.Visible = undoIssues.Count > 0;
+    }
+
+    private static bool IsOpenConflict(LinkConflictRecord conflict)
+    {
+        return string.Equals(conflict.Status, AssemblyLinkStatuses.Open, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string DescribeConflict(AssemblyRecord assembly, LinkConflictRecord conflict, int number)
+    {
+        var edge = assembly.LinkGraph.Edges.FirstOrDefault(item => item.Id == conflict.EdgeId);
+        var nodeId = conflict.NodeId != Guid.Empty ? conflict.NodeId : edge?.ChildNodeId ?? Guid.Empty;
+        var node = assembly.LinkGraph.Nodes.FirstOrDefault(item => item.Id == nodeId);
+        var part = node is null ? null : assembly.Parts.FirstOrDefault(item => item.Id == node.PartId);
+        var component = node is null ? null : assembly.Components.FirstOrDefault(item => item.Id == node.ComponentId);
+        var type = System.Text.RegularExpressions.Regex.Replace(conflict.ConflictType, "(?<=[a-z])(?=[A-Z])", " ");
+        var lines = new List<string>
+        {
+            $"{number}. {type}",
+            string.IsNullOrWhiteSpace(conflict.Message) ? "No further description was recorded." : conflict.Message
+        };
+        if (part is not null)
+            lines.Add($"Part: {part.Name}");
+        if (component is not null)
+            lines.Add($"Component: {component.Name}");
+        if (node is not null)
+        {
+            var location = node.Role switch
+            {
+                AssemblyLinkRoles.Source => "Input geometry",
+                AssemblyLinkRoles.OriginalAssembly => "ORIGINAL ASSEMBLIES",
+                AssemblyLinkRoles.CopiedComponent => "COPIED COMPONENTS",
+                AssemblyLinkRoles.FlatPart => "PARTS",
+                _ => node.Role
+            };
+            lines.Add($"Location: {location} | Link status: {node.Status}");
+            if (node.ObjectId != Guid.Empty)
+                lines.Add($"Object ID: {node.ObjectId:D}");
+        }
+        if (nodeId != Guid.Empty)
+            lines.Add($"Link node: {nodeId:D}");
+        if (conflict.EdgeId != Guid.Empty)
+            lines.Add($"Link edge: {conflict.EdgeId:D}");
+        if (conflict.CandidateObjectIds.Count > 0)
+            lines.Add($"Candidate object IDs: {string.Join(", ", conflict.CandidateObjectIds)}");
+        lines.Add($"Detected: {conflict.DetectedAt.ToLocalTime():g}");
+        return string.Join("\n", lines);
+    }
+
+    private void RefreshIssues()
+    {
+        try
+        {
+            _services.LinkEvents.ValidateLinks(_doc);
+            RefreshAssemblies();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, MessageBoxType.Error);
+        }
+    }
+
+    private string? ReadStoreJson()
+    {
+        return _doc.Strings.GetValue(AssemblyManagerConstants.StoreSection, AssemblyManagerConstants.StoreEntry);
+    }
+
+    private void StartObservingChanges()
+    {
+        if (_observingChanges)
+            return;
+
+        RhinoApp.Idle += OnRhinoIdle;
+        RhinoDoc.CloseDocument += OnDocumentClosed;
+        _observingChanges = true;
+    }
+
+    private void StopObservingChanges()
+    {
+        if (!_observingChanges)
+            return;
+
+        RhinoApp.Idle -= OnRhinoIdle;
+        RhinoDoc.CloseDocument -= OnDocumentClosed;
+        _observingChanges = false;
+    }
+
+    private void OnDocumentClosed(object? sender, DocumentEventArgs e)
+    {
+        if ((e.Document?.RuntimeSerialNumber ?? e.DocumentSerialNumber) == _doc.RuntimeSerialNumber)
+            StopObservingChanges();
+    }
+
+    private void OnRhinoIdle(object? sender, EventArgs e)
+    {
+        if (!Visible || _refreshingView)
+            return;
+
+        var json = _lastStoreJson;
+        try
+        {
+            // Only deserialize and rebuild the lists after the saved document data changes.
+            json = ReadStoreJson();
+            if (!string.Equals(json, _lastStoreJson, StringComparison.Ordinal))
+            {
+                RefreshAssemblies();
+                return;
+            }
+
+            var undoSignature = string.Join("\n", _services.LinkEvents.GetUndoHealthIssues(_doc));
+            if (!string.Equals(undoSignature, _lastUndoHealthSignature, StringComparison.Ordinal))
+                UpdateLinkIssues(SelectedAssembly());
+        }
+        catch (Exception ex)
+        {
+            // Avoid repeated dialogs on every idle tick if stored data cannot be read.
+            _lastStoreJson = json;
+            _linkIssueCount.Text = "Link issue status could not be refreshed.";
+            _linkIssueCount.TextColor = Colors.DarkRed;
+            _linkIssueDetails.Text = ex.Message;
+        }
     }
 
     private ComponentRecord? SelectedComponent(AssemblyRecord? assembly)
@@ -289,7 +529,7 @@ public sealed class AssemblyManagerDialog : Dialog<bool>
         {
             var result = _services.AssemblyRemoval().RemoveAssembly(_doc, assembly.Name);
             RhinoApp.WriteLine(
-                $"Removed {result.AssemblyName}: deleted {result.DeletedObjectCount} object(s), {result.DeletedLayerCount} layer(s), and {result.DeletedGroupCount} group(s).");
+                $"Removed {result.AssemblyName}: deleted {result.DeletedObjectCount} object(s), {result.DeletedLayerCount} layer(s), and {result.DeletedGroupCount} group(s); marked {result.DependentLinkConflictCount} downstream source link(s) for review.");
             RefreshAssemblies();
         }
         catch (Exception ex)
@@ -332,7 +572,7 @@ public sealed class AssemblyManagerDialog : Dialog<bool>
         }
     }
 
-    private void RefreshReferences()
+    private void UpdateAssembly()
     {
         var assembly = SelectedAssembly();
         if (assembly is null)
@@ -340,11 +580,17 @@ public sealed class AssemblyManagerDialog : Dialog<bool>
 
         try
         {
-            var count = _services.ReferenceUpdate().RefreshAssemblyReferences(_doc, assembly.Name);
-            RhinoApp.WriteLine("Refreshed {0} generated object(s) for {1}.", count, assembly.Name);
+            _services.LinkEvents.UpdateAssembly(_doc, assembly.Name);
+            var healthIssueCount = _services.LinkEvents.ValidateLinks(_doc).Count;
+            if (healthIssueCount == 0)
+                RhinoApp.WriteLine("Gazelle link health is clean after the update.");
+            else
+                RhinoApp.WriteLine("Gazelle still reports {0} link health warning(s) after the update.", healthIssueCount);
+            RefreshAssemblies();
         }
         catch (Exception ex)
         {
+            RhinoApp.WriteLine("Update assembly failed: {0}", ex.Message);
             MessageBox.Show(this, ex.Message, MessageBoxType.Error);
         }
     }

@@ -4,7 +4,9 @@ namespace AssemblyManagerPlugin.Core;
 
 public sealed class AssemblyStore
 {
-    public int SchemaVersion { get; set; } = 1;
+    public const int CurrentSchemaVersion = 2;
+
+    public int SchemaVersion { get; set; } = CurrentSchemaVersion;
     public List<AssemblyRecord> Assemblies { get; set; } = new();
     public List<MaterialRecord> MaterialLibraryCache { get; set; } = new();
     public List<ActionHistoryEntry> ActionHistory { get; set; } = new();
@@ -25,10 +27,13 @@ public sealed class AssemblyRecord
     public string SourceDocumentId { get; set; } = string.Empty;
     public string PartPrefix { get; set; } = "P";
     public string ComponentPrefix { get; set; } = "C";
+    public int NextPartSequence { get; set; } = 1;
+    public int NextComponentSequence { get; set; } = 1;
     public List<ComponentRecord> Components { get; set; } = new();
     public List<PartRecord> Parts { get; set; } = new();
     public List<HardwareRecord> Hardware { get; set; } = new();
     public List<GeometryReferenceRecord> GeometryReferences { get; set; } = new();
+    public AssemblyLinkGraphRecord LinkGraph { get; set; } = new();
     public List<NestingEstimateRecord> NestingEstimates { get; set; } = new();
     public MaterialEstimateReportRecord? LastMaterialEstimate { get; set; }
     public BomRecord? LastBillOfMaterials { get; set; }
@@ -56,6 +61,12 @@ public sealed class PartRecord
     public string GeometryFingerprint { get; set; } = string.Empty;
     public int Quantity { get; set; }
     public double MaterialThickness { get; set; }
+    /// <summary>
+    /// Parent material identity used when deciding whether live source occurrences belong to
+    /// the same part category. Kept separate from MaterialId, which may identify a selected
+    /// stock shape used by nesting and purchasing.
+    /// </summary>
+    public string CategorizationMaterialId { get; set; } = string.Empty;
     public string MaterialId { get; set; } = string.Empty;
     public List<Guid> SourceObjectIds { get; set; } = new();
     public List<Guid> GeneratedObjectIds { get; set; } = new();
@@ -190,12 +201,12 @@ public sealed class TransformRecord
         };
     }
 
-    public Transform ToTransform()
+    public bool TryToTransform(out Transform transform)
     {
-        if (Values.Count() != 16)
-            return Transform.Identity;
+        transform = Transform.Identity;
+        if (Values is null || Values.Length != 16 || Values.Any(value => double.IsNaN(value) || double.IsInfinity(value)))
+            return false;
 
-        var transform = Transform.Identity;
         transform.M00 = Values[0];
         transform.M01 = Values[1];
         transform.M02 = Values[2];
@@ -212,8 +223,101 @@ public sealed class TransformRecord
         transform.M31 = Values[13];
         transform.M32 = Values[14];
         transform.M33 = Values[15];
+        return transform.IsValid && transform.IsAffine && transform.TryGetInverse(out _);
+    }
+
+    public Transform ToTransform()
+    {
+        if (!TryToTransform(out var transform))
+            throw new InvalidOperationException("The stored transform must be a finite, affine, invertible 4x4 matrix.");
+
         return transform;
     }
+}
+
+/// <summary>
+/// Durable object-lineage graph for one assembly. Version 2 data is additive to the legacy
+/// GeometryReferences collection so older documents can be migrated without losing data.
+/// </summary>
+public sealed class AssemblyLinkGraphRecord
+{
+    public int SchemaVersion { get; set; } = AssemblyStore.CurrentSchemaVersion;
+    public List<AssemblyLinkNodeRecord> Nodes { get; set; } = new();
+    public List<AssemblyLinkEdgeRecord> Edges { get; set; } = new();
+    public List<LinkConflictRecord> Conflicts { get; set; } = new();
+    public List<SourceComponentInstanceRecord> SourceComponentInstances { get; set; } = new();
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
+/// One Rhino object participating in an assembly lineage. ObjectId may be empty while a
+/// deleted or ambiguous object is awaiting conflict resolution; Id remains stable.
+/// </summary>
+public sealed class AssemblyLinkNodeRecord
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid ObjectId { get; set; }
+    public string Role { get; set; } = AssemblyLinkRoles.Source;
+    public string Status { get; set; } = AssemblyLinkStatuses.Active;
+    public Guid PartId { get; set; }
+    public Guid ComponentId { get; set; }
+    public Guid SourceComponentInstanceId { get; set; }
+    public string SourceLocator { get; set; } = string.Empty;
+    public string GeometryFingerprint { get; set; } = string.Empty;
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public Dictionary<string, string> Metadata { get; set; } = new();
+}
+
+/// <summary>
+/// Directed dependency between two lineage nodes. The transform maps parent geometry into
+/// child model coordinates; Recipe and RecipeMetadata describe any procedural regeneration.
+/// </summary>
+public sealed class AssemblyLinkEdgeRecord
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid ParentNodeId { get; set; }
+    public Guid ChildNodeId { get; set; }
+    public TransformRecord ParentToChildTransform { get; set; } = TransformRecord.Identity();
+    public string Recipe { get; set; } = AssemblyLinkRecipes.DirectCopy;
+    public string Status { get; set; } = AssemblyLinkStatuses.Active;
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public Dictionary<string, string> RecipeMetadata { get; set; } = new();
+}
+
+/// <summary>
+/// A persisted ambiguity or broken-link condition that must not be resolved by guessing.
+/// </summary>
+public sealed class LinkConflictRecord
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string ConflictType { get; set; } = string.Empty;
+    public string Status { get; set; } = AssemblyLinkStatuses.Open;
+    public Guid NodeId { get; set; }
+    public Guid EdgeId { get; set; }
+    public string Message { get; set; } = string.Empty;
+    public List<Guid> CandidateObjectIds { get; set; } = new();
+    public DateTimeOffset DetectedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset? ResolvedAt { get; set; }
+    public Dictionary<string, string> Metadata { get; set; } = new();
+}
+
+/// <summary>
+/// One source-side Rhino component group before equivalent instances are consolidated into a
+/// ComponentRecord. SourceGroupId is the durable identity; SourceGroupIndex is only a lookup hint.
+/// </summary>
+public sealed class SourceComponentInstanceRecord
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid ComponentId { get; set; }
+    public Guid SourceGroupId { get; set; }
+    public int SourceGroupIndex { get; set; } = -1;
+    public string SourceGroupName { get; set; } = string.Empty;
+    public List<Guid> SourceNodeIds { get; set; } = new();
+    public Guid GeneratedGroupId { get; set; }
+    public string GeneratedGroupName { get; set; } = string.Empty;
+    public string Status { get; set; } = AssemblyLinkStatuses.Active;
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public Dictionary<string, string> Metadata { get; set; } = new();
 }
 
 public sealed class NestingEstimateRecord
@@ -358,6 +462,7 @@ public sealed class AssemblyRemovalResult
     public int DeletedObjectCount { get; set; }
     public int DeletedLayerCount { get; set; }
     public int DeletedGroupCount { get; set; }
+    public int DependentLinkConflictCount { get; set; }
     public bool MetadataRemoved { get; set; }
 }
 

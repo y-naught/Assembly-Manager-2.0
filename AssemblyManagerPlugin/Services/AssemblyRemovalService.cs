@@ -19,6 +19,7 @@ public sealed class AssemblyRemovalService
 
     public AssemblyRemovalResult RemoveAssembly(RhinoDoc doc, string assemblyName)
     {
+        using var mutation = AssemblyLinkMutationGate.Enter();
         var store = _repository.Load(doc);
         var assembly = store.FindAssembly(assemblyName);
         if (assembly is null)
@@ -33,11 +34,20 @@ public sealed class AssemblyRemovalService
                 objectIds.Add(objectId);
         }
 
+        var deletedObjectIds = new HashSet<Guid>();
         foreach (var objectId in objectIds)
         {
             if (TryDeleteObject(doc, objectId))
+            {
                 result.DeletedObjectCount++;
+                deletedObjectIds.Add(objectId);
+            }
         }
+
+        result.DependentLinkConflictCount = MarkDependentSourcesDeleted(
+            store,
+            assembly,
+            deletedObjectIds);
 
         foreach (var groupName in assembly.Components.SelectMany(component => component.InstanceGroupNames).Distinct(StringComparer.OrdinalIgnoreCase))
         {
@@ -60,12 +70,78 @@ public sealed class AssemblyRemovalService
             {
                 ["deletedObjects"] = result.DeletedObjectCount.ToString(),
                 ["deletedLayers"] = result.DeletedLayerCount.ToString(),
-                ["deletedGroups"] = result.DeletedGroupCount.ToString()
+                ["deletedGroups"] = result.DeletedGroupCount.ToString(),
+                ["dependentLinkConflicts"] = result.DependentLinkConflictCount.ToString()
             }
         });
 
         doc.Views.Redraw();
         return result;
+    }
+
+    private static int MarkDependentSourcesDeleted(
+        AssemblyStore store,
+        AssemblyRecord removedAssembly,
+        ISet<Guid> deletedObjectIds)
+    {
+        if (deletedObjectIds.Count == 0)
+            return 0;
+
+        const string eventKeyMetadata = "EventKey";
+        var affected = 0;
+        var now = DateTimeOffset.UtcNow;
+        foreach (var dependentAssembly in store.Assemblies.Where(candidate => candidate.Id != removedAssembly.Id))
+        {
+            var assemblyChanged = false;
+            foreach (var sourceNode in dependentAssembly.LinkGraph.Nodes.Where(node =>
+                         string.Equals(node.Role, AssemblyLinkRoles.Source, StringComparison.OrdinalIgnoreCase) &&
+                         deletedObjectIds.Contains(node.ObjectId)))
+            {
+                sourceNode.Status = AssemblyLinkStatuses.Deleted;
+                sourceNode.UpdatedAt = now;
+                foreach (var edge in dependentAssembly.LinkGraph.Edges.Where(edge => edge.ParentNodeId == sourceNode.Id))
+                {
+                    edge.Status = AssemblyLinkStatuses.Conflict;
+                    edge.UpdatedAt = now;
+                }
+
+                var eventKey = $"removed-assembly-source:{removedAssembly.Id}:{sourceNode.Id}";
+                var conflict = dependentAssembly.LinkGraph.Conflicts.FirstOrDefault(candidate =>
+                    string.Equals(candidate.Status, AssemblyLinkStatuses.Open, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(candidate.ConflictType, AssemblyLinkConflictTypes.SourceDeleted, StringComparison.OrdinalIgnoreCase) &&
+                    candidate.Metadata.TryGetValue(eventKeyMetadata, out var existingEventKey) &&
+                    string.Equals(existingEventKey, eventKey, StringComparison.Ordinal));
+                if (conflict is null)
+                {
+                    dependentAssembly.LinkGraph.Conflicts.Add(new LinkConflictRecord
+                    {
+                        ConflictType = AssemblyLinkConflictTypes.SourceDeleted,
+                        Status = AssemblyLinkStatuses.Open,
+                        NodeId = sourceNode.Id,
+                        Message = $"This source belonged to removed assembly '{removedAssembly.Name}'. Gazelle preserved the downstream geometry, but its lineage must be relinked, detached, or removed before it can update again.",
+                        CandidateObjectIds = new List<Guid> { sourceNode.ObjectId },
+                        DetectedAt = now,
+                        Metadata = new Dictionary<string, string>
+                        {
+                            [eventKeyMetadata] = eventKey,
+                            ["RemovedAssemblyId"] = removedAssembly.Id.ToString("D"),
+                            ["RemovedAssemblyName"] = removedAssembly.Name
+                        }
+                    });
+                }
+
+                affected++;
+                assemblyChanged = true;
+            }
+
+            if (!assemblyChanged)
+                continue;
+
+            dependentAssembly.LinkGraph.UpdatedAt = now;
+            dependentAssembly.UpdatedAt = now;
+        }
+
+        return affected;
     }
 
     private static HashSet<Guid> CollectManagedObjectIds(AssemblyRecord assembly)
@@ -93,6 +169,13 @@ public sealed class AssemblyRemovalService
         {
             if (reference.TargetObjectId != Guid.Empty)
                 objectIds.Add(reference.TargetObjectId);
+        }
+
+        foreach (var node in assembly.LinkGraph.Nodes.Where(node =>
+                     !string.Equals(node.Role, AssemblyLinkRoles.Source, StringComparison.OrdinalIgnoreCase)))
+        {
+            if (node.ObjectId != Guid.Empty)
+                objectIds.Add(node.ObjectId);
         }
 
         return objectIds;

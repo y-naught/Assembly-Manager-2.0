@@ -1,6 +1,7 @@
 ﻿using System;
 using AssemblyManagerPlugin.Infrastructure;
 using Rhino;
+using Rhino.PlugIns;
 
 namespace AssemblyManagerPlugin
 {
@@ -22,10 +23,25 @@ namespace AssemblyManagerPlugin
         ///<summary>Gets the only instance of the AssemblyManagerPlugin plug-in.</summary>
         public static AssemblyManagerPlugin Instance { get; private set; } = null!;
 
-        public ServiceFactory Services { get; } = new();
+        /// <summary>
+        /// The plug-in uses one service graph for its full lifetime. In particular, this
+        /// keeps the static Rhino event subscriptions associated with one event processor.
+        /// </summary>
+        public ServiceFactory Services => ServiceFactory.Instance;
 
-        // You can override methods here to change the plug-in behavior on
-        // loading and shut down, add options pages to the Rhino _Option command
-        // and maintain plug-in wide options in a document.
+        protected override LoadReturnCode OnLoad(ref string errorMessage)
+        {
+            var result = base.OnLoad(ref errorMessage);
+            if (result == LoadReturnCode.Success)
+                Services.LinkEvents.Start();
+
+            return result;
+        }
+
+        protected override void OnShutdown()
+        {
+            Services.LinkEvents.Stop();
+            base.OnShutdown();
+        }
     }
 }

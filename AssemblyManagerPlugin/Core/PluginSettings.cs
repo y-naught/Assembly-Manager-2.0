@@ -5,7 +5,7 @@ namespace AssemblyManagerPlugin.Core;
 
 public sealed class PluginSettingsRecord
 {
-    public int SchemaVersion { get; set; } = 8;
+    public int SchemaVersion { get; set; } = 9;
     public string LayoutTemplatePath { get; set; } = string.Empty;
     public AssemblyManagerSettingsRecord AssemblyManager { get; set; } = new();
     public LayPartsFlatSettingsRecord LayPartsFlat { get; set; } = new();
@@ -21,6 +21,7 @@ public sealed class AssemblyManagerSettingsRecord
     public string DefaultPartPrefix { get; set; } = "P";
     public string DefaultComponentPrefix { get; set; } = "C";
     public bool ColorizeParts { get; set; } = true;
+    public bool AutomaticallyPropagateChangesInAssembly { get; set; } = true;
     public double CategorizationLengthTolerance { get; set; } = 0.001;
     public double CategorizationAreaTolerance { get; set; } = 0.01;
     public double CategorizationVolumeTolerance { get; set; } = 0.01;

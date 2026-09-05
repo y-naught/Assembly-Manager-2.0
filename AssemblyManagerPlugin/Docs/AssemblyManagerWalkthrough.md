@@ -108,9 +108,25 @@ Gazelle creates one parent layer with three managed output branches:
 
 It also creates the top-level `HARDWARE` tree for imported hardware blocks and `ANNO` for annotations and generated tables.
 
-The `ORIGINAL ASSEMBLIES` geometry is managed output. Treat it like a generated data structure.
+The `ORIGINAL ASSEMBLIES` branch is managed, linked manufacturing geometry. It is not a drawing-only playground, but safe one-to-one edits to its closed BREPs are supported: Gazelle maps the edit back to the design source and rebuilds every linked original, copied component, and flat part. You can also edit the source model directly. Split/join operations, block leaves, unsupported geometry, and ambiguous simultaneous edits are preserved for review instead of being guessed; `RefreshAssemblyReferences` remains the manual rebuild fallback.
 
-Do not use `ORIGINAL ASSEMBLIES` geometry as your manual drawing playground if you want refreshes, estimates, and references to stay reliable. Edit the original source model when the design changes, then use `RefreshAssemblyReferences` or recreate the assembly as needed.
+Part and component numbers are reconciled after a supported update. For example, if two occurrences are `P01` and only one is changed beyond the categorization tolerances, the unchanged occurrence remains `P01` and the edited occurrence receives the next unused part number, such as `P02`. Its linked descendants, layer paths, quantities, component definition, legacy references, and manufacturing-report caches are updated with it.
+
+If this assembly already has linked flat parts, Gazelle also updates their transformations, quantities, material/thickness layers, and owned labels. Existing representatives keep their identities and accepted placement; new categories receive additional flat representatives, and safely managed superseded representatives are removed when no other output depends on them. User-created text and unsafe output are preserved. Use **Lay Parts Flat** for the first layout, and review reported copied-component gaps before running **Copy / Orient Components** again.
+
+With **Automatically propagate changes in assembly** enabled in Settings (the default), this happens after a supported input-geometry or assigned-material edit; no button click is required. For ten `P01` occurrences, editing one produces nine `P01` occurrences and one newly numbered occurrence on its own managed part layer. Rhino's command history reports the quantity changes. An unresolved source in another part category no longer blocks this update; only the category with incomplete evidence is held for review.
+
+For larger models, turn that setting off while making several edits, then select the assembly and click **Update Assembly** (formerly **Refresh References**). Gazelle continues tracking object identities and placement transforms without rebuilding generated geometry or recategorizing on each edit. Pending supported edits survive saving and reopening the model. The existing `RefreshAssemblyReferences` command performs the same update, and switching automatic propagation back on resumes pending work. Avoid editing both an input source and its generated original before updating; Gazelle preserves such competing edits as link issues rather than choosing one automatically.
+
+Established categories remain stable while changed occurrences are evaluated. Small tolerance differences among unchanged `P01` occurrences do not trigger a fresh regrouping of those parts or block the edited occurrence's new number. A changed occurrence that genuinely fits competing categories still needs review.
+
+With part coloring enabled, a newly numbered part gets a layer color different from the category it left. If the edit instead matches an existing part, its managed output layers use that part's established color, including custom colors. The palette can repeat across an assembly, so use part numbers to identify categories. Source colors and individual object color overrides stay unchanged.
+
+An old part layer under an original or copied component is removed when that component no longer needs it and the layer is completely empty. Layers with objects (including hidden or locked objects), child layers, or unresolved linked membership are preserved, as are current and reference layers. **Update Assembly** also checks known empty leftovers from earlier edits. This cleanup does not delete flat-part trees or annotations.
+
+During automatic and manual updates, Rhino's command line reports the current stage: linked geometry, part recategorization and quantities/materials, then existing flat PARTS geometry, placements, and labels when applicable. A final message reports elapsed update time, linked objects refreshed, new part categories, and the document-wide open link issue count. Messages are grouped by assembly and update stage, not printed for every object. An update that stops unexpectedly reports that it did not finish.
+
+When Rhino reports link review items, open **Assembly Manager** and select the assembly. The **Link Issues** section at the bottom of the right-hand panel, below **Workflow**, shows its open issue count, the document-wide total, and each recorded reason with the affected part/component and object details when available. Undo/redo health warnings appear separately. The display updates automatically while the window is open. **Refresh Issues** reloads the issues and checks link health without changing geometry or clearing conflicts; **Update Assembly** is the geometry rebuild action.
 
 New output always uses this hierarchy. Gazelle does not silently rename legacy `SHOP`, `DRAWINGS`, or `CAM` trees in an existing Rhino document.
 
@@ -124,13 +140,15 @@ This is the geometry you can move, rotate, isolate, and edit for drawing present
 
 Good to edit:
 
-- `COPIED COMPONENTS` copies created by `CopyOrientComponents`.
+- The position and rotation of `COPIED COMPONENTS` copies created by `CopyOrientComponents`.
+- Closed BREP geometry under `ORIGINAL ASSEMBLIES` when you intend that change to become the revised design source.
 - Layout annotations.
 - Detail labels and leaders.
 
-Do not manually edit as production source:
+Do not manually reshape as production source:
 
-- Generated `ORIGINAL ASSEMBLIES` geometry.
+- `COPIED COMPONENTS` or laid-flat `PARTS` geometry; those branches are quarantined for review if reshaped directly.
+- Split, joined, open, or block-leaf `ORIGINAL ASSEMBLIES` geometry; these structural cases are not promoted automatically.
 - Generated assembly metadata.
 - Generated layer paths that Gazelle expects to own.
 

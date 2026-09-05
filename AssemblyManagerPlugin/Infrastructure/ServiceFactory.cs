@@ -5,31 +5,62 @@ namespace AssemblyManagerPlugin.Infrastructure;
 
 public sealed class ServiceFactory
 {
+    public static ServiceFactory Instance { get; } = new();
+
     public AssemblyRepository Repository { get; } = new();
     public LayerService Layers { get; } = new();
     public PluginSettingsService PluginSettings { get; } = new();
     public GeometryFingerprintService Fingerprints { get; }
+    public AssemblyLineageService Lineage { get; } = new();
+    public AssemblyCategorizationReconciliationService CategorizationReconciliation { get; }
+    public IActionHistorySink History { get; }
+    public ReferenceUpdateService ReferenceUpdates { get; }
+    public FlatPartSynchronizationService FlatPartSynchronization { get; }
+    public AssemblyLinkEventService LinkEvents { get; }
 
-    public ServiceFactory()
+    private ServiceFactory()
     {
+        History = new DocumentActionHistorySink(Repository);
         Fingerprints = new GeometryFingerprintService(PluginSettings);
+        CategorizationReconciliation = new AssemblyCategorizationReconciliationService(
+            Fingerprints,
+            Layers,
+            Lineage,
+            PluginSettings);
+        FlatPartSynchronization = new FlatPartSynchronizationService(
+            Layers, Fingerprints, MaterialLibrary(), Lineage, PluginSettings);
+        ReferenceUpdates = new ReferenceUpdateService(
+            Repository,
+            History,
+            Lineage,
+            Fingerprints,
+            CategorizationReconciliation,
+            FlatPartSynchronization);
+        LinkEvents = new AssemblyLinkEventService(Repository, ReferenceUpdates, Lineage, Fingerprints,
+            () => PluginSettings.AutomaticallyPropagateChangesInAssembly);
     }
-
-    public IActionHistorySink History => new DocumentActionHistorySink(Repository);
 
     public AssemblyGenerationService AssemblyGeneration()
     {
-        return new AssemblyGenerationService(Repository, Layers, Fingerprints, PluginSettings, History);
+        return new AssemblyGenerationService(Repository, Layers, Fingerprints, PluginSettings, History, Lineage);
     }
 
     public LayPartsFlatService LayPartsFlat()
     {
-        return new LayPartsFlatService(Repository, Layers, Fingerprints, MaterialLibrary(), PluginSettings, History);
+        return new LayPartsFlatService(
+            Repository,
+            Layers,
+            Fingerprints,
+            MaterialLibrary(),
+            PluginSettings,
+            History,
+            Lineage,
+            ReferenceUpdates);
     }
 
     public ComponentDrawingService ComponentDrawing()
     {
-        return new ComponentDrawingService(Repository, Layers, History);
+        return new ComponentDrawingService(Repository, Layers, History, Lineage);
     }
 
     public HardwareImportService HardwareImport()
@@ -59,7 +90,7 @@ public sealed class ServiceFactory
 
     public ReferenceUpdateService ReferenceUpdate()
     {
-        return new ReferenceUpdateService(Repository, History);
+        return ReferenceUpdates;
     }
 
     public MaterialLibraryService MaterialLibrary()

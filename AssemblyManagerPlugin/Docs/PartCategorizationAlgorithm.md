@@ -6,6 +6,7 @@ This document explains how the Assembly Manager workflow inside Gazelle decides 
 
 - `Geometry/GeometryFingerprintService.cs`: creates part and component fingerprints.
 - `Services/AssemblyGenerationService.cs`: expands selected groups, filters valid parts, groups candidates, copies geometry, and writes assembly records.
+- `Services/AssemblyCategorizationReconciliationService.cs`: rebuilds part/component definitions from live source evidence after linked geometry refresh.
 - `Services/MaterialAssignment.cs`: normalizes assigned material ids before they are included in categorization.
 
 ## High-level flow
@@ -108,6 +109,30 @@ part category = raw geometry comparison + normalized material id
 If two objects have identical geometry but different assigned parent materials, they become different part categories. If both are unassigned, both use `UNASSIGNED`.
 
 The assigned stock shape or sheet size is not part of the categorization key.
+
+## Live recategorization and stable numbering
+
+After a supported linked geometry or material update, only live design-source occurrences vote on categorization. This runs automatically after an input edit or an accepted `ORIGINAL ASSEMBLIES` edit unless **Automatically propagate changes in assembly** is off; **Update Assembly** applies pending edits manually. The `RefreshAssemblyReferences` command is retained as an alias-compatible entry point to that workflow. Generated originals, copied components, and flat outputs inherit the winning identity through their lineage; they do not vote while they may still contain earlier geometry.
+
+- An occurrence still equivalent to its category keeps its part number.
+- If only part of a category changes, the unchanged cohort keeps the old number and the divergent cohort receives the next monotonically allocated number.
+- If the entire cohort changes together and remains equivalent, it keeps the old number.
+- If a changed cohort unambiguously matches an existing category, it merges into that category.
+- Complete component occurrences use the same stable rules after their part identities are settled.
+
+The live pass starts from established, unchanged part categories and then evaluates changed source occurrences. It does not rebuild every unchanged category from scratch or merge two unchanged categories merely because their current measurements overlap. This matters because tolerance comparison is not transitive: A can match B and B can match C while A does not match C. Re-clustering those unchanged occurrences could otherwise create an artificial ambiguity and prevent a separate edited part from receiving its new number.
+
+A changed occurrence must have an unambiguous category assignment. If it genuinely matches competing categories, Gazelle preserves the affected categorization and records a review item. Missing, unsupported, or block-backed source evidence protects its entire existing part category, including its quantities and outputs. Complete categories elsewhere in the same assembly can still recategorize automatically. For example, an unresolved `P10` source must not prevent ten valid `P01` occurrences from becoming nine `P01` occurrences and one newly numbered occurrence after an edit. Structural one-to-many edits such as Split and Join are not inferred by this pass.
+
+The new identity updates managed output layers and quantities through the existing lineage. For an assembly with existing linked flat output, the update then synchronizes flat representatives and owned labels: retain existing identities and accepted placement, add representatives for new supported categories, and retire safely managed superseded representatives without downstream dependencies. This does not create the first flat layout or automatically create missing copied-component representatives. Review reported output gaps before using the corresponding output commands. The Assembly Manager **Link Issues** section shows open review reasons and the affected part, component, and linked object when that context is available.
+
+### Layer colors and obsolete part layers
+
+Recategorization captures existing category colors before moving managed objects. An occurrence that joins an existing category uses that category's established layer color, including a custom color, across its managed original, copied, and flat-part output layers. With part coloring enabled, a newly numbered category receives a palette color different from the category it left, even when the palette wraps. Colors are not globally unique identifiers; the part number remains authoritative. Flat-part creation also reuses an established category color. Input geometry colors and per-object color overrides are preserved.
+
+When **Colorize Parts** is disabled, new categories use black; established category colors are still preserved.
+
+After updating membership and moving geometry, Gazelle removes an obsolete part leaf under a managed original or copied component only when no current membership or link requires it, it contains no objects, and it has no child layers. Hidden, locked, reference, and block-definition geometry count as contents. Current and reference layers remain untouched. The same narrow cleanup can remove known empty leftovers from earlier recategorizations during **Update Assembly**; it does not prune component roots, unknown custom layers, flat-part trees, or annotations. Flat synchronization manages only its own safely identified representatives and generated labels.
 
 ## Component fingerprint
 

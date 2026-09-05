@@ -14,6 +14,11 @@ public sealed class SettingsDialog : Dialog<bool>
     private readonly TextBox _defaultPartPrefix = new() { Width = 120 };
     private readonly TextBox _defaultComponentPrefix = new() { Width = 120 };
     private readonly CheckBox _colorizeParts = new() { Text = "Colorize generated part layers" };
+    private readonly CheckBox _automaticallyPropagateChanges = new()
+    {
+        Text = "Automatically propagate changes in assembly",
+        ToolTip = "When off, linked edits wait until you click Update Assembly. Object links and placement transforms continue to be tracked."
+    };
     private readonly TextBox _lengthTolerance = new() { Width = 120 };
     private readonly TextBox _areaTolerance = new() { Width = 120 };
     private readonly TextBox _volumeTolerance = new() { Width = 120 };
@@ -34,6 +39,7 @@ public sealed class SettingsDialog : Dialog<bool>
         _defaultPartPrefix.Text = saved.AssemblyManager.DefaultPartPrefix;
         _defaultComponentPrefix.Text = saved.AssemblyManager.DefaultComponentPrefix;
         _colorizeParts.Checked = saved.AssemblyManager.ColorizeParts;
+        _automaticallyPropagateChanges.Checked = saved.AssemblyManager.AutomaticallyPropagateChangesInAssembly;
         _lengthTolerance.Text = FormatDouble(saved.AssemblyManager.CategorizationLengthTolerance);
         _areaTolerance.Text = FormatDouble(saved.AssemblyManager.CategorizationAreaTolerance);
         _volumeTolerance.Text = FormatDouble(saved.AssemblyManager.CategorizationVolumeTolerance);
@@ -64,6 +70,7 @@ public sealed class SettingsDialog : Dialog<bool>
         layout.AddRow(new Label { Text = "Default Part Prefix" }, _defaultPartPrefix);
         layout.AddRow(new Label { Text = "Default Component Prefix" }, _defaultComponentPrefix);
         layout.AddRow(new Label { Text = string.Empty }, _colorizeParts);
+        layout.AddRow(new Label { Text = string.Empty }, _automaticallyPropagateChanges);
         layout.AddRow(new Label { Text = "Length / Edge Tolerance" }, _lengthTolerance);
         layout.AddRow(new Label { Text = "Area Tolerance" }, _areaTolerance);
         layout.AddRow(new Label { Text = "Volume Tolerance" }, _volumeTolerance);
@@ -127,6 +134,7 @@ public sealed class SettingsDialog : Dialog<bool>
         saved.AssemblyManager.DefaultPartPrefix = string.IsNullOrWhiteSpace(_defaultPartPrefix.Text) ? "P" : _defaultPartPrefix.Text.Trim();
         saved.AssemblyManager.DefaultComponentPrefix = string.IsNullOrWhiteSpace(_defaultComponentPrefix.Text) ? "C" : _defaultComponentPrefix.Text.Trim();
         saved.AssemblyManager.ColorizeParts = _colorizeParts.Checked == true;
+        saved.AssemblyManager.AutomaticallyPropagateChangesInAssembly = _automaticallyPropagateChanges.Checked == true;
         saved.AssemblyManager.CategorizationLengthTolerance = lengthTolerance;
         saved.AssemblyManager.CategorizationAreaTolerance = areaTolerance;
         saved.AssemblyManager.CategorizationVolumeTolerance = volumeTolerance;

@@ -21,7 +21,7 @@ public sealed class RemoveAssemblyCommand : Command
         {
             var result = AssemblyManagerPlugin.Instance.Services.AssemblyRemoval().RemoveAssembly(doc, assemblyName);
             RhinoApp.WriteLine(
-                $"Removed {result.AssemblyName}: deleted {result.DeletedObjectCount} object(s), {result.DeletedLayerCount} layer(s), and {result.DeletedGroupCount} group(s).");
+                $"Removed {result.AssemblyName}: deleted {result.DeletedObjectCount} object(s), {result.DeletedLayerCount} layer(s), and {result.DeletedGroupCount} group(s); marked {result.DependentLinkConflictCount} downstream source link(s) for review.");
             return Result.Success;
         }
         catch (Exception ex)

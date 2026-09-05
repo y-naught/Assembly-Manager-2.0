@@ -11,16 +11,23 @@ public sealed class ComponentDrawingService
     private readonly AssemblyRepository _repository;
     private readonly LayerService _layers;
     private readonly IActionHistorySink _history;
+    private readonly AssemblyLineageService _lineage;
 
-    public ComponentDrawingService(AssemblyRepository repository, LayerService layers, IActionHistorySink history)
+    public ComponentDrawingService(
+        AssemblyRepository repository,
+        LayerService layers,
+        IActionHistorySink history,
+        AssemblyLineageService lineage)
     {
         _repository = repository;
         _layers = layers;
         _history = history;
+        _lineage = lineage;
     }
 
     public int CopyAndOrientComponents(RhinoDoc doc, string assemblyName)
     {
+        using var mutation = AssemblyLinkMutationGate.Enter();
         var store = _repository.Load(doc);
         var assembly = store.FindAssembly(assemblyName)
             ?? throw new InvalidOperationException($"Assembly '{assemblyName}' was not found.");
@@ -32,17 +39,37 @@ public sealed class ComponentDrawingService
         var rowIndex = 0;
         foreach (var component in assembly.Components.OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase))
         {
-            var copiedIds = CopyOneComponentInstance(doc, assemblyName, component);
-            if (copiedIds.Count == 0)
+            var copiedObjects = CopyOneComponentInstance(doc, assemblyName, component);
+            if (copiedObjects.Count == 0)
                 continue;
 
-            MoveToDrawingRow(doc, copiedIds, rowIndex);
-            OptimizePlanRotation(doc, copiedIds);
+            var rowTranslation = MoveToDrawingRow(doc, copiedObjects, rowIndex);
+            var planRotation = OptimizePlanRotation(doc, copiedObjects);
+            var parentToChild = planRotation * rowTranslation;
+            foreach (var copiedObject in copiedObjects)
+            {
+                var partId = assembly.Parts.FirstOrDefault(part =>
+                    string.Equals(part.Name, copiedObject.PartName, StringComparison.OrdinalIgnoreCase))?.Id ?? Guid.Empty;
+                _lineage.RegisterDerived(
+                    doc,
+                    assembly,
+                    copiedObject.ParentObjectId,
+                    AssemblyLinkRoles.OriginalAssembly,
+                    copiedObject.TargetObjectId,
+                    AssemblyLinkRoles.CopiedComponent,
+                    parentToChild,
+                    partId: partId,
+                    componentId: component.Id);
+            }
+
+            var copiedIds = copiedObjects.Select(item => item.TargetObjectId).ToList();
             CreateGroup(doc, assemblyName, component.Name, copiedIds);
             copiedComponentCount++;
             rowIndex++;
         }
 
+        assembly.UpdatedAt = DateTimeOffset.UtcNow;
+        _repository.Save(doc, store);
         _history.Record(doc, new ActionHistoryEntry
         {
             CommandName = "CopyOrientComponents",
@@ -54,9 +81,9 @@ public sealed class ComponentDrawingService
         return copiedComponentCount;
     }
 
-    private List<Guid> CopyOneComponentInstance(RhinoDoc doc, string assemblyName, ComponentRecord component)
+    private List<CopiedObject> CopyOneComponentInstance(RhinoDoc doc, string assemblyName, ComponentRecord component)
     {
-        var copiedIds = new List<Guid>();
+        var copiedObjects = new List<CopiedObject>();
         if (component.RepresentativeObjectIdsByPartName.Count > 0)
         {
             foreach (var (partName, objectIds) in component.RepresentativeObjectIdsByPartName)
@@ -67,11 +94,18 @@ public sealed class ComponentDrawingService
                     if (sourceObject is null)
                         continue;
 
-                    copiedIds.Add(CopyPartObjectToDrawingLayer(doc, assemblyName, component.Name, partName, sourceObject));
+                    var targetObjectId = CopyPartObjectToDrawingLayer(
+                        doc,
+                        assemblyName,
+                        component.Name,
+                        partName,
+                        sourceObject);
+                    if (targetObjectId != Guid.Empty)
+                        copiedObjects.Add(new CopiedObject(sourceObjectId, targetObjectId, partName));
                 }
             }
 
-            return copiedIds;
+            return copiedObjects;
         }
 
         foreach (var partName in component.PartNames)
@@ -88,10 +122,17 @@ public sealed class ComponentDrawingService
             if (sourceObject is null)
                 continue;
 
-            copiedIds.Add(CopyPartObjectToDrawingLayer(doc, assemblyName, component.Name, partName, sourceObject));
+            var targetObjectId = CopyPartObjectToDrawingLayer(
+                doc,
+                assemblyName,
+                component.Name,
+                partName,
+                sourceObject);
+            if (targetObjectId != Guid.Empty)
+                copiedObjects.Add(new CopiedObject(sourceObject.Id, targetObjectId, partName));
         }
 
-        return copiedIds;
+        return copiedObjects;
     }
 
     private Guid CopyPartObjectToDrawingLayer(
@@ -103,31 +144,36 @@ public sealed class ComponentDrawingService
     {
         var sourceLayer = doc.Layers[sourceObject.Attributes.LayerIndex];
         var drawingLayer = LayerService.CopiedComponentPart(assemblyName, componentName, partName);
-        var drawingLayerIndex = _layers.EnsureLayerIndex(doc, drawingLayer, sourceLayer.Color);
+        var color = _layers.FindPartLayerColor(doc, assemblyName, partName) ?? sourceLayer.Color;
+        var drawingLayerIndex = _layers.EnsurePartLayerIndex(doc, drawingLayer, color);
         var geometry = sourceObject.Geometry.Duplicate();
         var attributes = sourceObject.Attributes.Duplicate();
         attributes.LayerIndex = drawingLayerIndex;
         attributes.RemoveFromAllGroups();
+        AssemblyLineageService.ClearLinkMetadata(attributes);
         return doc.Objects.Add(geometry, attributes);
     }
 
-    private static void MoveToDrawingRow(RhinoDoc doc, IReadOnlyList<Guid> objectIds, int rowIndex)
+    private static Transform MoveToDrawingRow(RhinoDoc doc, IReadOnlyList<CopiedObject> copiedObjects, int rowIndex)
     {
+        var objectIds = copiedObjects.Select(item => item.TargetObjectId).ToList();
         var bbox = TransformUtilities.GetBoundingBox(objectIds, doc);
         if (!bbox.IsValid)
-            return;
+            return Transform.Identity;
 
         var target = new Point3d(1200.0 + rowIndex * 200.0, 0.0, 0.0);
         var translation = Transform.Translation(target - bbox.Center);
-        foreach (var objectId in objectIds)
-            doc.Objects.Transform(objectId, translation, true);
+        ApplyTransform(doc, copiedObjects, translation);
+
+        return translation;
     }
 
-    private static void OptimizePlanRotation(RhinoDoc doc, IReadOnlyList<Guid> objectIds)
+    private static Transform OptimizePlanRotation(RhinoDoc doc, IReadOnlyList<CopiedObject> copiedObjects)
     {
+        var objectIds = copiedObjects.Select(item => item.TargetObjectId).ToList();
         var bbox = TransformUtilities.GetBoundingBox(objectIds, doc);
         if (!bbox.IsValid)
-            return;
+            return Transform.Identity;
 
         var center = bbox.Center;
         var bestAngle = 0.0;
@@ -157,11 +203,25 @@ public sealed class ComponentDrawingService
         }
 
         if (Math.Abs(bestAngle) < RhinoMath.ZeroTolerance)
-            return;
+            return Transform.Identity;
 
         var bestRotation = Transform.Rotation(RhinoMath.ToRadians(bestAngle), Vector3d.ZAxis, center);
-        foreach (var objectId in objectIds)
-            doc.Objects.Transform(objectId, bestRotation, true);
+        ApplyTransform(doc, copiedObjects, bestRotation);
+
+        return bestRotation;
+    }
+
+    private static void ApplyTransform(
+        RhinoDoc doc,
+        IReadOnlyList<CopiedObject> copiedObjects,
+        Transform transform)
+    {
+        foreach (var copiedObject in copiedObjects)
+        {
+            var transformedId = doc.Objects.Transform(copiedObject.TargetObjectId, transform, true);
+            if (transformedId != Guid.Empty)
+                copiedObject.TargetObjectId = transformedId;
+        }
     }
 
     private static double PlanArea(BoundingBox bbox)
@@ -192,5 +252,19 @@ public sealed class ComponentDrawingService
             readableName = readableName[..maximumReadableLength];
 
         return readableName + uniqueSuffix;
+    }
+
+    private sealed class CopiedObject
+    {
+        public CopiedObject(Guid parentObjectId, Guid targetObjectId, string partName)
+        {
+            ParentObjectId = parentObjectId;
+            TargetObjectId = targetObjectId;
+            PartName = partName;
+        }
+
+        public Guid ParentObjectId { get; }
+        public Guid TargetObjectId { get; set; }
+        public string PartName { get; }
     }
 }

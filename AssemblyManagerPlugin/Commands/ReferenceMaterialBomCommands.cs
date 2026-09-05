@@ -13,19 +13,25 @@ public sealed class RefreshAssemblyReferencesCommand : Command
 
     protected override Result RunCommand(RhinoDoc doc, RunMode mode)
     {
-        var assemblyName = CommandPickers.PickAssembly(doc, "Assembly to refresh from source geometry");
+        var assemblyName = CommandPickers.PickAssembly(doc, "Assembly to update");
         if (assemblyName is null)
             return Result.Cancel;
 
         try
         {
-            var count = AssemblyManagerPlugin.Instance.Services.ReferenceUpdate().RefreshAssemblyReferences(doc, assemblyName);
-            RhinoApp.WriteLine("Refreshed {0} generated object(s) for {1}.", count, assemblyName);
+            var services = AssemblyManagerPlugin.Instance.Services;
+            services.LinkEvents.UpdateAssembly(doc, assemblyName);
+            var healthIssueCount = services.LinkEvents.ValidateLinks(doc).Count;
+            RhinoApp.WriteLine(
+                healthIssueCount == 0
+                    ? "Gazelle link health is clean after the update."
+                    : "Gazelle still reports {0} link health warning(s) after the update.",
+                healthIssueCount);
             return Result.Success;
         }
         catch (Exception ex)
         {
-            RhinoApp.WriteLine("Refresh references failed: {0}", ex.Message);
+            RhinoApp.WriteLine("Update assembly failed: {0}", ex.Message);
             return Result.Failure;
         }
     }

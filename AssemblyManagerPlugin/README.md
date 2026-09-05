@@ -11,6 +11,7 @@ The main workflow is the Assembly Manager. It takes grouped Rhino geometry, iden
 - Categorizes matching components based on the parts and hardware inside each component group.
 - Passes imported hardware through without analyzing it as manufacturable sheet parts.
 - Creates `ORIGINAL ASSEMBLIES`, `COPIED COMPONENTS`, and `PARTS` branches under an `ASSEMBLY MANAGER` parent, plus top-level `HARDWARE` and `ANNO` trees.
+- Persists linked object identities and transforms so one-to-one source changes—and safe closed-BREP edits in `ORIGINAL ASSEMBLIES`—update generated descendants automatically, or wait for **Update Assembly** when automatic propagation is disabled.
 - Lays one representative of each unique part flat for CAM or nesting review.
 - Groups flat parts by assigned material and material thickness.
 - Stores a persistent material library with parent materials and purchasable stock shapes.
@@ -29,9 +30,14 @@ The main workflow is the Assembly Manager. It takes grouped Rhino geometry, iden
 4. Use `ImportHardware` for STEP hardware that should pass through categorization.
 5. Open `AssemblyManager` and create the assembly from the grouped model.
 6. Use `LayPartsFlat` for CAM prep.
-7. Use `CopyOrientComponents` for editable drawing copies.
+7. Use `CopyOrientComponents` for linked drawing copies that can be repositioned without losing their source relationship.
 8. Use `EstimateMaterials`, `PlaceMaterialEstimate`, `GenerateBom`, and `ExportBom` for reporting.
+
 9. Use `LabelDetail`, `LabelPart`, `LabelParts`, and `DimDetail` in layout space for documentation.
+
+Supported geometry and assigned-material edits to a design source or a linked closed BREP under `ORIGINAL ASSEMBLIES` propagate through the graph. Gazelle then reconciles part and component identity: unchanged cohorts keep their existing numbers, while a genuinely divergent occurrence receives the next unused `P##`/`C##` number.
+
+To batch edits, turn off **Automatically propagate changes in assembly** in Assembly Manager settings. Object identities and placement transforms continue to be tracked, but geometry propagation and recategorization wait for **Update Assembly** (formerly **Refresh References**). Pending supported edits are saved in the model; the existing `RefreshAssemblyReferences` command uses the same update workflow. Re-enabling the toggle resumes pending automatic work. Editing both a source and its generated original before updating is ambiguous and remains a visible link issue rather than silently choosing one edit.
 
 ## Important Model Rules
 
@@ -49,9 +55,10 @@ Ordinary unmarked blocks are expanded and analyzed as normal part geometry. Impo
 - [Material Library Schema](Docs/MaterialLibraryFormat.md)
 - [Export Schemas](Docs/ExportSchemas.md)
 - [Part Categorization Algorithm](Docs/PartCategorizationAlgorithm.md)
+- [Linked Assembly Architecture](Docs/LinkedAssemblyArchitecture.md)
 
 ## Data And Persistence
 
 Assembly records are saved into the active Rhino document as JSON. Plugin settings, saved layout template path, and the shared material library are stored in Rhino's persistent plugin settings so they can be reused across models.
 
-Material assignments and hardware metadata are stored on Rhino object attributes as user strings. Those assignments are copied into generated assembly geometry, which is what lets estimates, labels, BOM rows, and generated layers stay connected to the source workflow.
+Material assignments, hardware metadata, and link recovery IDs are stored on Rhino object attributes as user strings. The authoritative version 2 link graph is stored in the Rhino document JSON and records immediate parent-to-child transforms through original assemblies, drawing copies, and flat parts.

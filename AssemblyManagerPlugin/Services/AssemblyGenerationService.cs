@@ -23,23 +23,27 @@ public sealed class AssemblyGenerationService
     private readonly GeometryFingerprintService _fingerprints;
     private readonly PluginSettingsService _settings;
     private readonly IActionHistorySink _history;
+    private readonly AssemblyLineageService _lineage;
 
     public AssemblyGenerationService(
         AssemblyRepository repository,
         LayerService layers,
         GeometryFingerprintService fingerprints,
         PluginSettingsService settings,
-        IActionHistorySink history)
+        IActionHistorySink history,
+        AssemblyLineageService lineage)
     {
         _repository = repository;
         _layers = layers;
         _fingerprints = fingerprints;
         _settings = settings;
         _history = history;
+        _lineage = lineage;
     }
 
     public CreateAssemblyResult CreateAssembly(RhinoDoc doc, IEnumerable<Guid> sourceObjectIds, CreateAssemblyOptions options)
     {
+        using var mutation = AssemblyLinkMutationGate.Enter();
         using var progress = new CreateAssemblyProgress();
         progress.Update(0, "Starting assembly creation");
         var pluginSettings = _settings.Load();
@@ -113,6 +117,7 @@ public sealed class AssemblyGenerationService
         var partIndex = 0;
         foreach (var category in partCategories)
         {
+            var canonicalCandidate = category.First();
             var partName = $"{options.PartPrefix}{partIndex + 1:00}";
             var color = PartColorForIndex(partIndex, assemblySettings.ColorizeParts);
             var partLayer = LayerService.OriginalPart(options.AssemblyName, "unsorted", partName);
@@ -121,10 +126,13 @@ public sealed class AssemblyGenerationService
             var partRecord = new PartRecord
             {
                 Name = partName,
-                GeometryFingerprint = category.First().Fingerprint,
+                GeometryFingerprint = canonicalCandidate.Fingerprint,
                 Quantity = category.Count(),
-                MaterialThickness = 0.0,
-                MaterialId = category.First().MaterialId
+                MaterialThickness = canonicalCandidate.Geometry is Brep canonicalBrep
+                    ? _fingerprints.GetMaterialThickness(canonicalBrep)
+                    : 0.0,
+                CategorizationMaterialId = canonicalCandidate.MaterialId,
+                MaterialId = canonicalCandidate.MaterialId
             };
 
             foreach (var candidate in category)
@@ -141,28 +149,56 @@ public sealed class AssemblyGenerationService
                 attributes.LayerIndex = layerIndex;
                 attributes.Name = string.IsNullOrWhiteSpace(attributes.Name) ? partName : attributes.Name;
                 attributes.RemoveFromAllGroups();
-                ReferenceUpdateService.AttachReferenceUserStrings(attributes, candidate.SourceObjectId, assemblyTranslation);
+                AssemblyLineageService.ClearLinkMetadata(attributes);
+                var referenceId = Guid.NewGuid();
+                ReferenceUpdateService.AttachReferenceUserStrings(
+                    attributes,
+                    candidate.SourceObjectId,
+                    assemblyTranslation,
+                    referenceId);
                 var generatedId = doc.Objects.Add(geometry, attributes);
+                if (generatedId == Guid.Empty)
+                {
+                    warnings.Add($"Could not create generated geometry for source object {candidate.SourceObjectId}.");
+                    continue;
+                }
+
                 candidate.GeneratedObjectId = generatedId;
                 partRecord.SourceObjectIds.Add(candidate.SourceObjectId);
                 partRecord.GeneratedObjectIds.Add(generatedId);
-                assembly.GeometryReferences.Add(new GeometryReferenceRecord
+                var reference = new GeometryReferenceRecord
                 {
+                    Id = referenceId,
                     AssemblyName = options.AssemblyName,
                     PartName = partName,
                     SourceObjectId = candidate.SourceObjectId,
                     TargetObjectId = generatedId,
                     TargetRole = AssemblyManagerConstants.GeneratedAssemblyReferenceRole,
                     SourceToTargetTransform = TransformRecord.FromTransform(assemblyTranslation)
-                });
+                };
+                assembly.GeometryReferences.Add(reference);
+                var registeredLink = _lineage.RegisterDerived(
+                    doc,
+                    assembly,
+                    candidate.SourceObjectId,
+                    AssemblyLinkRoles.Source,
+                    generatedId,
+                    AssemblyLinkRoles.OriginalAssembly,
+                    assemblyTranslation,
+                    sourceObject is InstanceObject
+                        ? AssemblyLinkRecipes.BlockDefinitionPart
+                        : AssemblyLinkRecipes.DirectCopy,
+                    partId: partRecord.Id,
+                    edgeId: reference.Id);
+                registeredLink.Parent.GeometryFingerprint = candidate.Fingerprint;
+                registeredLink.Child.GeometryFingerprint = candidate.Fingerprint;
 
-                if (candidate.Geometry is Brep brep)
-                    partRecord.MaterialThickness = _fingerprints.GetMaterialThickness(brep);
             }
 
             assembly.Parts.Add(partRecord);
             partIndex++;
         }
+        assembly.NextPartSequence = partIndex + 1;
 
         var debugReportPath = string.Empty;
         if (assemblySettings.DebugCategorization)
@@ -172,6 +208,7 @@ public sealed class AssemblyGenerationService
         var componentCandidates = BuildComponentCandidates(doc, options, assembly, candidates, hardwareCandidates, assemblyTranslation, assemblySettings.ColorizeParts);
         progress.Update(6, "Consolidating equivalent components");
         ConsolidateComponents(doc, options, assembly, componentCandidates, assemblySettings.ColorizeParts);
+        assembly.NextComponentSequence = assembly.Components.Count + 1;
         progress.Update(7, "Cleaning up temporary layers");
         CleanupLayerTreeIfEmpty(doc, LayerService.OriginalComponent(options.AssemblyName, "unsorted"));
 
@@ -269,22 +306,44 @@ public sealed class AssemblyGenerationService
 
             foreach (var hardware in hardwareGroups.GetValueOrDefault(groupKey) ?? new List<HardwareCandidate>())
             {
-                var generatedId = CopyHardwareToOriginalAssemblyLayer(doc, options, component.TemporaryName, hardware, assemblyTranslation);
+                var referenceId = Guid.NewGuid();
+                var generatedId = CopyHardwareToOriginalAssemblyLayer(
+                    doc,
+                    options,
+                    component.TemporaryName,
+                    hardware,
+                    assemblyTranslation,
+                    referenceId);
                 if (generatedId == Guid.Empty)
                     continue;
 
                 hardware.GeneratedObjectId = generatedId;
                 component.Hardware.Add(hardware);
                 component.GeneratedObjectIds.Add(generatedId);
-                assembly.GeometryReferences.Add(new GeometryReferenceRecord
+                var reference = new GeometryReferenceRecord
                 {
+                    Id = referenceId,
                     AssemblyName = options.AssemblyName,
                     PartName = hardware.LayerName,
                     SourceObjectId = hardware.SourceObjectId,
                     TargetObjectId = generatedId,
                     TargetRole = AssemblyManagerConstants.GeneratedHardwareReferenceRole,
                     SourceToTargetTransform = TransformRecord.FromTransform(assemblyTranslation)
-                });
+                };
+                assembly.GeometryReferences.Add(reference);
+                var hardwareSourceObject = doc.Objects.FindId(hardware.SourceObjectId);
+                _lineage.RegisterDerived(
+                    doc,
+                    assembly,
+                    hardware.SourceObjectId,
+                    AssemblyLinkRoles.Source,
+                    generatedId,
+                    AssemblyLinkRoles.Hardware,
+                    assemblyTranslation,
+                    hardwareSourceObject is InstanceObject
+                        ? AssemblyLinkRecipes.BlockDefinitionPart
+                        : AssemblyLinkRecipes.DirectCopy,
+                    edgeId: reference.Id);
             }
 
             component.Fingerprint = _fingerprints.CreateComponentFingerprint(BuildComponentFingerprintParts(component));
@@ -340,6 +399,42 @@ public sealed class AssemblyGenerationService
             {
                 componentRecord.InstanceGroupNames.Add(component.GeneratedGroupName);
                 componentRecord.ObjectIds.AddRange(component.GeneratedObjectIds);
+
+                var sourceObjectIds = component.Parts.Select(part => part.SourceObjectId)
+                    .Concat(component.Hardware.Select(hardware => hardware.SourceObjectId));
+                var sourceInstance = _lineage.RegisterSourceComponentInstance(
+                    doc,
+                    assembly,
+                    componentRecord,
+                    component.SourceGroupIndex,
+                    component.SourceGroupName,
+                    sourceObjectIds,
+                    component.GeneratedGroupName);
+
+                foreach (var generatedObjectId in component.GeneratedObjectIds)
+                {
+                    var generatedNode = assembly.LinkGraph.Nodes.FirstOrDefault(node =>
+                        node.ObjectId == generatedObjectId);
+                    if (generatedNode is null)
+                        continue;
+
+                    generatedNode.ComponentId = componentRecord.Id;
+                    generatedNode.SourceComponentInstanceId = sourceInstance.Id;
+                    var incomingEdge = assembly.LinkGraph.Edges.FirstOrDefault(edge =>
+                        edge.ChildNodeId == generatedNode.Id);
+                    var parentNode = incomingEdge is null
+                        ? null
+                        : assembly.LinkGraph.Nodes.FirstOrDefault(node => node.Id == incomingEdge.ParentNodeId);
+                    if (incomingEdge is not null && parentNode is not null)
+                    {
+                        _lineage.ApplyObjectMetadata(
+                            doc,
+                            assembly,
+                            generatedNode,
+                            incomingEdge,
+                            parentNode.ObjectId);
+                    }
+                }
 
                 foreach (var part in component.Parts)
                 {
@@ -518,7 +613,8 @@ public sealed class AssemblyGenerationService
         CreateAssemblyOptions options,
         string componentName,
         HardwareCandidate hardware,
-        Transform assemblyTranslation)
+        Transform assemblyTranslation,
+        Guid referenceId)
     {
         var sourceObject = doc.Objects.FindId(hardware.SourceObjectId);
         if (sourceObject is null)
@@ -533,13 +629,18 @@ public sealed class AssemblyGenerationService
             Color.DarkGray);
         attributes.Name = string.IsNullOrWhiteSpace(attributes.Name) ? hardware.Name : attributes.Name;
         attributes.RemoveFromAllGroups();
+        AssemblyLineageService.ClearLinkMetadata(attributes);
         HardwareMetadata.Mark(attributes, new HardwareMetadataRecord(
             hardware.Identifier,
             hardware.Name,
             hardware.Description,
             hardware.SourcePath,
             hardware.BlockDefinitionName));
-        ReferenceUpdateService.AttachReferenceUserStrings(attributes, hardware.SourceObjectId, assemblyTranslation);
+        ReferenceUpdateService.AttachReferenceUserStrings(
+            attributes,
+            hardware.SourceObjectId,
+            assemblyTranslation,
+            referenceId);
 
         return doc.Objects.Add(geometry, attributes);
     }
@@ -847,14 +948,7 @@ public sealed class AssemblyGenerationService
 
     private static Color PartColorForName(string partName, bool colorizeParts)
     {
-        if (!colorizeParts)
-            return Color.Black;
-
-        var digits = new string(partName.Where(char.IsDigit).ToArray());
-        if (!int.TryParse(digits, out var index))
-            index = 1;
-
-        return LayerService.DefaultPartColors[(Math.Max(1, index) - 1) % LayerService.DefaultPartColors.Length];
+        return LayerService.PartColorForName(partName, colorizeParts);
     }
 
     private sealed class PartCategorizationDebugReport

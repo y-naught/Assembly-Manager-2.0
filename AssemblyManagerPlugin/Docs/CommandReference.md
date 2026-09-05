@@ -6,10 +6,12 @@ This is the fast version of the command list. For deeper notes, prompts, side ef
 
 | Command | What it does |
 | --- | --- |
-| `AssemblyManager` | Opens the main Assembly Manager window for creating assemblies, reviewing parts/components, laying parts flat, making drawing copies, estimating materials, and generating BOM data. |
+| `AssemblyManager` | Opens the main Assembly Manager window for creating assemblies, reviewing parts/components and link issue counts/details, laying parts flat, making drawing copies, estimating materials, and generating BOM data. |
 | `CreateAssembly` | Creates a managed assembly from selected grouped model geometry. This is the command-line version of the Create Assembly button. |
 | `RemoveAssembly` | Deletes a managed assembly, its generated geometry, generated groups, and managed layer trees. |
-| `RefreshAssemblyReferences` | Rebuilds generated `ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES` geometry from stored source-object references. |
+| `RefreshAssemblyReferences` | Runs **Update Assembly**: accepts safe pending original edits, rebuilds linked originals, copied components, and flat parts, and reconciles categories and quantities. Available even when automatic propagation is off; the command name is retained for existing aliases. |
+
+The window's **Refresh Issues** button only reloads issue details and performs a read-only link-health check. It does not rebuild geometry or clear conflicts. **Update Assembly** (formerly **Refresh References**) applies pending supported geometry and material edits. **Automatically propagate changes in assembly** is on by default in Settings; turn it off to batch edits without automatic geometry rebuilding. UUIDs, placement transforms, and pending changes continue to be tracked and saved.
 
 ## Manufacturing
 

@@ -255,7 +255,13 @@ public sealed class MaterialLibraryService : IMaterialLibrary
         UpsertFlatMaterial(store.MaterialLibraryCache, material);
         part.MaterialId = material.Id;
         part.MaterialThickness = material.Thickness > 0 ? material.Thickness : part.MaterialThickness;
-        ApplyMaterialToObjects(doc, part.GeneratedObjectIds.Concat(part.CamObjectIds), material);
+        // A part-level material assignment is a design-source edit. Writing generated
+        // originals/flats here would bypass the automatic-update toggle and create competing
+        // source/original edit requests. The normal update pipeline distributes it instead.
+        ApplyMaterialToObjects(doc, part.SourceObjectIds, material);
+        assembly.LastBillOfMaterials = null;
+        assembly.LastMaterialEstimate = null;
+        assembly.NestingEstimates.Clear();
         assembly.UpdatedAt = DateTimeOffset.UtcNow;
         _repository.Save(doc, store);
         _history.Record(doc, new ActionHistoryEntry

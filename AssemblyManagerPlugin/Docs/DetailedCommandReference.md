@@ -10,6 +10,8 @@ Opens the main Assembly Manager window.
 
 Use this for the normal workflow. The window lets you create an assembly, select existing assemblies, see component types, see the part list for a component, remove assemblies, lay parts flat, copy drawing geometry, estimate materials, place/export estimates, generate BOM data, open settings, and open the material library.
 
+The **Link Issues** section shows the selected assembly's open issue count, the document-wide total, and detailed reasons with part/component, location, and object/link IDs when available. Undo/redo health warnings are listed separately. The display updates automatically as saved assembly data changes and retains the selected assembly and component. **Refresh Issues** reloads this information and checks link health without modifying geometry or resolving conflicts; it is different from **Update Assembly**.
+
 The command name is still `AssemblyManager` because that is the name of the workflow inside Gazelle.
 
 ### `CreateAssembly`
@@ -34,7 +36,7 @@ What it does:
 - Creates component records from the parts and hardware in each group.
 - Copies generated geometry to `ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES::<assembly>`.
 - Creates component and part layers under `ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES`.
-- Stores source object references so generated `ORIGINAL ASSEMBLIES` geometry can be refreshed later.
+- Stores a versioned link graph connecting source objects, generated originals, copied components, and laid-flat parts.
 - Saves assembly metadata in the Rhino document.
 
 Important behavior:
@@ -49,11 +51,23 @@ Deletes a managed assembly.
 
 It removes assembly metadata, generated objects, generated groups, and the managed layer trees for the assembly. It is meant to clean up the Gazelle output, not the original source model.
 
+If another assembly uses one of those generated objects as a source, Gazelle preserves that downstream assembly's geometry and records its source and outgoing links as needing review instead of leaving them falsely active.
+
 ### `RefreshAssemblyReferences`
 
-Refreshes generated `ASSEMBLY MANAGER::ORIGINAL ASSEMBLIES` geometry from the original source objects.
+Runs the window's **Update Assembly** action. The command name is retained for existing aliases. It first applies pending link and placement bookkeeping and accepts safe edits to generated originals, then updates linked descendants, including copied component views and laid-flat parts created with the current link schema.
 
-Use this when source geometry has been edited after assembly creation and you want generated `ORIGINAL ASSEMBLIES` geometry updated from those stored references. This is not a replacement for every future reference/update feature, but it is the first working source-refresh path.
+Source replacements, assigned-material changes, and safe one-to-one closed-BREP edits under `ORIGINAL ASSEMBLIES` are detected while Gazelle is loaded. With **Automatically propagate changes in assembly** enabled (the default), supported edits update automatically. Turn it off in Settings to batch edits: identities, transforms, safety checks, and pending changes are still saved, but generated geometry and recategorization wait for **Update Assembly**. Re-enabling the toggle resumes pending automatic updates. Manual updating does not change the toggle.
+
+Edits to both a source and its original before updating, or to several originals sharing one source, are preserved for review. **Update Assembly** does not silently discard an unresolved original-promotion edit. Direct edits to copied or flat output can still be rebuilt from their authoritative source. Legacy assemblies can migrate their stored source-to-original links, but legacy copied and laid-flat geometry must be regenerated once because older versions did not save those transforms.
+
+After geometry propagation finishes, Gazelle re-evaluates supported live design-source BREPs. If one occurrence no longer matches the other `P01` occurrences, the unchanged cohort keeps `P01` and the changed occurrence receives the next unused part number. If all occurrences change together, the existing part number remains stable. An unambiguous match to another existing part category merges into that category instead of creating a duplicate. The same stable split/merge rule is applied to complete component occurrences, and cached nesting, estimate, and BOM results are invalidated.
+
+The same recategorization runs after automatic input edits and accepted `ORIGINAL ASSEMBLIES` edits. It keeps unchanged part categories as stable references while evaluating changed occurrences, so tolerance differences within an established category do not prevent a separate edited occurrence from receiving a new number and managed layer. Unchanged categories are not merged opportunistically.
+
+For an assembly that already has linked flat output, updating also keeps one representative per supported part category: existing representatives retain their UUIDs and accepted layout, newly split categories receive additional representatives, and safely managed superseded representatives are retired when nothing depends on them. Source-to-flat transforms, quantities, material/thickness layers, owned labels, and generated row headers are updated together. Arbitrary user text and unsafe or dependency-bearing output are preserved. Updating does not lay out an assembly for the first time; use **Lay Parts Flat** for that.
+
+Copied-component output remains preserved by lineage; a changed category without a copied representative is reported for review before **Copy / Orient Components** is run again. Missing, unsupported, block-backed, or tolerance-ambiguous source evidence remains unchanged and is recorded for review rather than being guessed.
 
 ## Hardware
 
@@ -215,9 +229,9 @@ The command regenerates the material estimate and BOM before writing the CSV, so
 
 Copies one representative of each component type to `ASSEMBLY MANAGER::COPIED COMPONENTS::<assembly>`.
 
-Use this for drawing views and manual documentation setup. The copied geometry is intended to be moved, rotated, and edited for drawing presentation.
+Use this for drawing views and manual documentation setup. Copied geometry can be moved and rotated; Gazelle updates its stored placement matrix. Direct shape edits are held for review so the plugin does not silently overwrite the source or guess which version should win.
 
-Do not treat `ORIGINAL ASSEMBLIES` geometry the same way. `ORIGINAL ASSEMBLIES` is Gazelle-managed output and is used by other features. If you need to change the design, edit the source model and refresh or recreate the assembly.
+`ORIGINAL ASSEMBLIES` is linked manufacturing geometry, not drawing-only output. A safe one-to-one edit to a closed BREP there is mapped back to its design source, then Gazelle updates the linked original, copied component, and flat part. Split/join operations, block-definition leaves, open or unsupported geometry, and ambiguous concurrent edits remain review items instead of being guessed. You can also edit the design source directly. Updates run automatically while the plugin is loaded unless **Automatically propagate changes in assembly** is off; in that case use **Update Assembly**.
 
 ### `NewLayout`
 
@@ -329,6 +343,7 @@ Open settings with `AssemblyManagerSettings` or the Settings button in the Assem
 | Default Part Prefix | `P` | Prefix used for generated part names, such as `P01`. |
 | Default Component Prefix | `C` | Prefix used for generated component names, such as `C01`. |
 | Colorize Generated Part Layers | On | Whether generated part layers receive cycling colors. When off, generated part layers are black. |
+| Automatically Propagate Changes In Assembly | On | When off, defer geometry, material propagation, and recategorization until **Update Assembly**. Link identities and placement transforms continue to be tracked. Pending edits are saved in the model. |
 | Length / Edge Tolerance | `0.001` | Rounding tolerance for edge lengths, dimensions, and component centroid distance tokens. |
 | Area Tolerance | `0.01` | Rounding tolerance for part surface area in fingerprints. |
 | Volume Tolerance | `0.01` | Rounding tolerance for part volume in fingerprints. |

@@ -88,6 +88,58 @@ public sealed class LayerService
         return EnsureLayer(doc, fullPath, color).Index;
     }
 
+    public static Color PartColorForName(string partName, bool colorizeParts = true)
+    {
+        if (!colorizeParts)
+            return Color.Black;
+        var digits = new string(partName.Where(char.IsDigit).ToArray());
+        if (!int.TryParse(digits, out var index))
+            index = 1;
+        return DefaultPartColors[(Math.Max(1, index) - 1) % DefaultPartColors.Length];
+    }
+
+    /// <summary>Existing original layers are the color authority, including user custom colors.</summary>
+    public Color? FindPartLayerColor(RhinoDoc doc, string assemblyName, string partName)
+    {
+        var originalRoot = OriginalAssembly(assemblyName);
+        var copiedRoot = CopiedComponentsAssembly(assemblyName);
+        var flatPath = $"{PartsPart(assemblyName, partName)}::3D";
+        return doc.Layers.Where(layer => layer is not null && !layer.IsDeleted)
+            .Select(layer => new
+            {
+                Layer = layer,
+                Priority = string.Equals(layer.Name, partName, StringComparison.OrdinalIgnoreCase) &&
+                           string.Equals(ParentPath(ParentPath(layer.FullPath)), originalRoot, StringComparison.OrdinalIgnoreCase)
+                    ? 0
+                    : string.Equals(layer.Name, partName, StringComparison.OrdinalIgnoreCase) &&
+                      string.Equals(ParentPath(ParentPath(layer.FullPath)), copiedRoot, StringComparison.OrdinalIgnoreCase)
+                        ? 1
+                        : string.Equals(layer.FullPath, flatPath, StringComparison.OrdinalIgnoreCase) ? 2 : 3
+            })
+            .Where(item => item.Priority < 3)
+            .OrderBy(item => item.Priority)
+            .ThenByDescending(item => doc.Objects.FindByLayer(item.Layer).Length > 0)
+            .ThenBy(item => item.Layer.FullPath, StringComparer.OrdinalIgnoreCase)
+            .Select(item => (Color?)item.Layer.Color)
+            .FirstOrDefault();
+    }
+
+    /// <summary>Set the part leaf's color without recoloring its component or assembly parents.</summary>
+    public int EnsurePartLayerIndex(RhinoDoc doc, string fullPath, Color color)
+    {
+        var parentPath = ParentPath(fullPath);
+        if (!string.IsNullOrWhiteSpace(parentPath))
+            EnsureLayer(doc, parentPath);
+        var layer = EnsureLayer(doc, fullPath, color);
+        if (layer.Color.ToArgb() != color.ToArgb())
+        {
+            layer.Color = color;
+            if (doc.Layers[layer.Index].Color.ToArgb() != color.ToArgb())
+                throw new InvalidOperationException($"Could not update part layer color for '{fullPath}'.");
+        }
+        return layer.Index;
+    }
+
     public int FindLayerIndex(RhinoDoc doc, string fullPath)
     {
         for (var i = 0; i < doc.Layers.Count; i++)
@@ -168,7 +220,23 @@ public sealed class LayerService
             return;
 
         var layer = doc.Layers[layerIndex];
-        if (doc.Objects.FindByLayer(layer).Length > 0)
+        if (layer.IsReference || layerIndex == doc.Layers.CurrentLayerIndex)
+            return;
+
+        // Include objects that normal visible-object enumeration can omit. Never remove
+        // operator geometry, reference objects or block-definition contents as cleanup.
+        var objects = new ObjectEnumeratorSettings
+        {
+            NormalObjects = true,
+            HiddenObjects = true,
+            LockedObjects = true,
+            ReferenceObjects = true,
+            IdefObjects = true,
+            IncludeLights = true,
+            IncludeGrips = true,
+            LayerIndexFilter = layerIndex
+        };
+        if (doc.Objects.GetObjectList(objects).Any())
             return;
 
         var hasChildren = doc.Layers.Any(child => child is not null && !child.IsDeleted && child.ParentLayerId == layer.Id);
