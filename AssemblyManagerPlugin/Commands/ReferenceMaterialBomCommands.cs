@@ -218,33 +218,9 @@ public sealed class PlaceMaterialEstimateCommand : Command
 
     protected override Result RunCommand(RhinoDoc doc, RunMode mode)
     {
-        if (doc.ActiveSpace != ActiveSpace.PageSpace)
-        {
-            RhinoApp.WriteLine("PlaceMaterialEstimate must be run from layout/page space.");
-            return Result.Failure;
-        }
-
-        var assemblyName = CommandPickers.PickAssembly(doc, "Assembly for material estimate table");
-        if (assemblyName is null)
-            return Result.Cancel;
-
-        var pointGetter = new GetPoint();
-        pointGetter.SetCommandPrompt("Material estimate table insertion point");
-        pointGetter.Get();
-        if (pointGetter.CommandResult() != Result.Success)
-            return pointGetter.CommandResult();
-
-        try
-        {
-            var count = AssemblyManagerPlugin.Instance.Services.NestingEstimate().PlaceMaterialEstimateTable(doc, assemblyName, pointGetter.Point());
-            RhinoApp.WriteLine("Placed material estimate table with {0} object(s).", count);
-            return Result.Success;
-        }
-        catch (Exception ex)
-        {
-            RhinoApp.WriteLine("Place material estimate failed: {0}", ex.Message);
-            return Result.Failure;
-        }
+        // Retain existing Rhino aliases/macros while directing all interactive placement
+        // to the configurable, rectangle-fitted BOM workflow.
+        return PlaceBomCommand.RunPlacement(doc, AssemblyManagerPlugin.Instance.Services);
     }
 }
 

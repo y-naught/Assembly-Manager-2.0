@@ -17,10 +17,13 @@ public sealed class ServiceFactory
     public ReferenceUpdateService ReferenceUpdates { get; }
     public FlatPartSynchronizationService FlatPartSynchronization { get; }
     public AssemblyLinkEventService LinkEvents { get; }
+    public ComponentUpdateService ComponentUpdates { get; }
+    public LinkedAssemblySafetyService LinkSafety { get; }
 
     private ServiceFactory()
     {
         History = new DocumentActionHistorySink(Repository);
+        LinkSafety = new LinkedAssemblySafetyService(Repository, () => PluginSettings.EnableLinkedAssemblies);
         Fingerprints = new GeometryFingerprintService(PluginSettings);
         CategorizationReconciliation = new AssemblyCategorizationReconciliationService(
             Fingerprints,
@@ -29,20 +32,25 @@ public sealed class ServiceFactory
             PluginSettings);
         FlatPartSynchronization = new FlatPartSynchronizationService(
             Layers, Fingerprints, MaterialLibrary(), Lineage, PluginSettings);
+        ComponentUpdates = new ComponentUpdateService(Repository, Layers, Fingerprints, Lineage,
+            () => PluginSettings.Load().AssemblyManager.ColorizeParts);
         ReferenceUpdates = new ReferenceUpdateService(
             Repository,
             History,
             Lineage,
             Fingerprints,
             CategorizationReconciliation,
-            FlatPartSynchronization);
+            FlatPartSynchronization,
+            componentUpdates: ComponentUpdates,
+            linkSafety: LinkSafety);
         LinkEvents = new AssemblyLinkEventService(Repository, ReferenceUpdates, Lineage, Fingerprints,
-            () => PluginSettings.AutomaticallyPropagateChangesInAssembly);
+            () => PluginSettings.AutomaticallyPropagateChangesInAssembly, ComponentUpdates, LinkSafety);
+        PluginSettings.LinkingPreferenceChanged += (_, _) => LinkEvents.RefreshLinkingPreference();
     }
 
     public AssemblyGenerationService AssemblyGeneration()
     {
-        return new AssemblyGenerationService(Repository, Layers, Fingerprints, PluginSettings, History, Lineage);
+        return new AssemblyGenerationService(Repository, Layers, Fingerprints, PluginSettings, History, Lineage, LinkSafety);
     }
 
     public LayPartsFlatService LayPartsFlat()
@@ -60,7 +68,7 @@ public sealed class ServiceFactory
 
     public ComponentDrawingService ComponentDrawing()
     {
-        return new ComponentDrawingService(Repository, Layers, History, Lineage);
+        return new ComponentDrawingService(Repository, Layers, History, Lineage, LinkSafety);
     }
 
     public HardwareImportService HardwareImport()
@@ -106,6 +114,11 @@ public sealed class ServiceFactory
     public BomService Bom()
     {
         return new BomService(Repository, History);
+    }
+
+    public PlacedBomService PlacedBom()
+    {
+        return new PlacedBomService(Repository, Layers, NestingEstimate(), MaterialLibrary(), History);
     }
 
     public LayoutTemplateImportService LayoutTemplateImport()

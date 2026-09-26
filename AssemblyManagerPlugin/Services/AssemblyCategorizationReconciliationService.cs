@@ -50,7 +50,12 @@ public sealed class AssemblyCategorizationReconciliationService
             .ToDictionary(group => group.Key, group => group.First().PartName!);
 
         var evidence = CapturePartEvidence(doc, assembly, out var protectedPartIds);
-        if (evidence.Count == 0)
+        var hasHardwareSources = assembly.Hardware.Any(hardware => assembly.LinkGraph.Nodes.Any(node =>
+            string.Equals(node.Role, AssemblyLinkRoles.Source, StringComparison.OrdinalIgnoreCase) &&
+            (node.ObjectId == hardware.SourceObjectId || node.ObjectId == hardware.BlockInstanceId)));
+        // A component can consist entirely of hardware. It still needs membership,
+        // quantities and category reconciliation even without manufacturable part evidence.
+        if (evidence.Count == 0 && (protectedPartIds.Count > 0 || !hasHardwareSources))
         {
             assembly.UpdatedAt = DateTimeOffset.UtcNow;
             assembly.LinkGraph.UpdatedAt = assembly.UpdatedAt;
@@ -83,8 +88,7 @@ public sealed class AssemblyCategorizationReconciliationService
         // category inherits the edited object's old layer color, or a merge loses the
         // existing destination category's custom color.
         var colorsByPartId = assembly.Parts.ToDictionary(part => part.Id, part =>
-            _layers.FindPartLayerColor(doc, assembly.Name, part.Name) ??
-            LayerService.PartColorForName(part.Name, colorizeParts));
+            _layers.GetOrAssignPartColor(doc, assembly, part, colorizeParts));
         var knownPartNames = assembly.Parts.Select(part => part.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var previousComponentNames = assembly.Components.Select(component => component.Name).ToList();
         var assignments = AssignPartDefinitions(assembly, clusters);
@@ -142,12 +146,12 @@ public sealed class AssemblyCategorizationReconciliationService
                                                liveCopiedNodes.Count > 0 &&
                                                assembly.Components
             .Where(component => !protectedComponentIds.Contains(component.Id))
-            .Any(component =>
-            liveCopiedNodes
-                .Where(node => node.ComponentId == component.Id && node.SourceComponentInstanceId != Guid.Empty)
-                .Select(node => node.SourceComponentInstanceId)
-                .Distinct()
-                .Count() != 1);
+            // Drawing views do not vote on category quantity. Multiple views of one
+            // occurrence, or views of different occurrences whose categories merged,
+            // remain valid independently tracked output. Only missing coverage needs
+            // another placement; never ask the operator to delete valid extra views.
+            .Any(component => !liveCopiedNodes.Any(node =>
+                node.ComponentId == component.Id && node.SourceComponentInstanceId != Guid.Empty));
 
         return new CategorizationReconciliationResult(
             assignments.Values.Count(part => part.WasCreated),
@@ -1137,35 +1141,14 @@ public sealed class AssemblyCategorizationReconciliationService
         IDictionary<Guid, System.Drawing.Color> colorsByPartId,
         bool colorizeParts)
     {
-        foreach (var (cluster, assignment) in assignments.Where(pair => pair.Value.WasCreated)
-                     .OrderBy(pair => pair.Value.Part.Name, StringComparer.OrdinalIgnoreCase))
+        foreach (var assignment in assignments.Values.Where(value => value.WasCreated)
+                     .OrderBy(value => value.Part.Name, StringComparer.OrdinalIgnoreCase))
         {
-            var preferred = LayerService.PartColorForName(assignment.Part.Name, colorizeParts);
-            if (!colorizeParts)
-            {
-                colorsByPartId[assignment.Part.Id] = preferred;
-                continue;
-            }
-
-            var previousColors = cluster.Members.Select(member => colorsByPartId[member.OldPart.Id].ToArgb()).ToHashSet();
-            var usedColors = colorsByPartId.Values.Select(color => color.ToArgb()).ToHashSet();
-            var start = Array.FindIndex(LayerService.DefaultPartColors, color => color.ToArgb() == preferred.ToArgb());
-            var palette = Enumerable.Range(0, LayerService.DefaultPartColors.Length)
-                .Select(offset => LayerService.DefaultPartColors[(start + offset) % LayerService.DefaultPartColors.Length])
-                .Where(color => !previousColors.Contains(color.ToArgb()))
-                .ToList();
-            // Prefer an unused palette color, but never inherit a predecessor's color just
-            // because part numbering has wrapped the finite palette (for example P01/P22).
-            var unused = palette.Where(color => !usedColors.Contains(color.ToArgb())).ToList();
-            var selected = unused.Count > 0 ? unused[0] : palette.Count > 0 ? palette[0] : preferred;
-            // A changed cohort can contain predecessors using every palette color. In that
-            // case choose a deterministic extra color rather than recycling a predecessor.
-            while (previousColors.Contains(selected.ToArgb()))
-            {
-                var rgb = ((selected.ToArgb() & 0xffffff) + 0x9e3779) & 0xffffff;
-                selected = System.Drawing.Color.FromArgb((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255);
-            }
+            // Include all old and new categories so a split cannot inherit its predecessor
+            // color, even after exhausting the predefined palette.
+            var selected = LayerService.ChoosePartColor(assignment.Part.Name, colorizeParts, colorsByPartId.Values);
             colorsByPartId[assignment.Part.Id] = selected;
+            assignment.Part.LayerColorArgb = selected.ToArgb();
         }
     }
 

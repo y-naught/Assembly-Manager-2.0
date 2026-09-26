@@ -57,22 +57,7 @@ public sealed class BomService
             }
         }
 
-        foreach (var hardwareGroup in assembly.Hardware
-            .GroupBy(HardwareBomKey)
-            .OrderBy(group => group.Key.Item, StringComparer.OrdinalIgnoreCase))
-        {
-            var hardware = hardwareGroup.First();
-            bom.Lines.Add(new BomLineRecord
-            {
-                Category = "Hardware",
-                Item = string.IsNullOrWhiteSpace(hardware.BlockDefinitionName) ? hardware.Name : hardware.BlockDefinitionName,
-                Description = string.IsNullOrWhiteSpace(hardware.Description) ? hardware.Name : hardware.Description,
-                Quantity = hardwareGroup.Sum(item => Math.Max(1, item.Quantity)),
-                Unit = "ea",
-                MaterialId = hardware.MaterialId,
-                Source = string.IsNullOrWhiteSpace(hardware.SourcePath) ? "Document" : hardware.SourcePath
-            });
-        }
+        bom.Lines.AddRange(BuildHardwareLines(assembly.Hardware));
 
         assembly.LastBillOfMaterials = bom;
         assembly.UpdatedAt = DateTimeOffset.UtcNow;
@@ -84,6 +69,34 @@ public sealed class BomService
             Summary = $"Generated BOM with {bom.Lines.Count} line(s)."
         });
         return bom;
+    }
+
+    // Share the exact same aggregation between the CSV/command BOM and the placed
+    // table. Hardware quantities represent assembly occurrences, not drawing copies.
+    internal static IReadOnlyList<BomLineRecord> BuildHardwareLines(IEnumerable<HardwareRecord> records)
+    {
+        var lines = new List<BomLineRecord>();
+        foreach (var hardwareGroup in records
+            .GroupBy(HardwareBomKey)
+            .OrderBy(group => group.Key.Item, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(group => group.Key.Description, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(group => group.Key.MaterialId, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(group => group.Key.SourcePath, StringComparer.OrdinalIgnoreCase))
+        {
+            var hardware = hardwareGroup.First();
+            lines.Add(new BomLineRecord
+            {
+                Category = "Hardware",
+                Item = string.IsNullOrWhiteSpace(hardware.BlockDefinitionName) ? hardware.Name : hardware.BlockDefinitionName,
+                Description = string.IsNullOrWhiteSpace(hardware.Description) ? hardware.Name : hardware.Description,
+                Quantity = hardwareGroup.Sum(item => Math.Max(1, item.Quantity)),
+                Unit = "ea",
+                MaterialId = hardware.MaterialId,
+                Source = string.IsNullOrWhiteSpace(hardware.SourcePath) ? "Document" : hardware.SourcePath
+            });
+        }
+
+        return lines;
     }
 
     public void ExportCsv(BomRecord bom, string filepath)

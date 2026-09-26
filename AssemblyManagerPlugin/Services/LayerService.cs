@@ -92,10 +92,105 @@ public sealed class LayerService
     {
         if (!colorizeParts)
             return Color.Black;
+        var index = PartColorIndex(partName);
+        if (index < DefaultPartColors.Length)
+            return DefaultPartColors[index];
+        // Stable fallback for callers without a document/category. Real allocations below
+        // are random once and stored on the PartRecord, never randomized on each refresh.
+        var seed = 2166136261u;
+        foreach (var character in partName.ToUpperInvariant())
+            seed = unchecked((seed ^ character) * 16777619u);
+        return AdditionalPartColor(DefaultPartColors, new Random(unchecked((int)seed)));
+    }
+
+    private static int PartColorIndex(string partName)
+    {
         var digits = new string(partName.Where(char.IsDigit).ToArray());
         if (!int.TryParse(digits, out var index))
             index = 1;
-        return DefaultPartColors[(Math.Max(1, index) - 1) % DefaultPartColors.Length];
+        return Math.Max(1, index) - 1;
+    }
+
+    public static Color ChoosePartColor(string partName, bool colorizeParts, IEnumerable<Color> usedColors)
+        => ChoosePartColor(PartColorIndex(partName) + 1, colorizeParts, usedColors);
+
+    public static Color ChoosePartColor(int categorySequence, bool colorizeParts, IEnumerable<Color> usedColors)
+    {
+        if (!colorizeParts)
+            return Color.Black;
+        var used = usedColors.ToArray();
+        var index = Math.Max(1, categorySequence) - 1;
+        if (index < DefaultPartColors.Length)
+        {
+            var preferred = DefaultPartColors[index];
+            if (used.All(color => color.ToArgb() != preferred.ToArgb()))
+                return preferred;
+            var unused = DefaultPartColors.Where(color => used.All(other => other.ToArgb() != color.ToArgb())).ToArray();
+            if (unused.Length > 0)
+                return unused[0];
+        }
+        return AdditionalPartColor(used.Concat(DefaultPartColors), Random.Shared);
+    }
+
+    private static Color AdditionalPartColor(IEnumerable<Color> existing, Random random)
+    {
+        var occupied = existing.Select(color => color.ToArgb()).Distinct().Select(Color.FromArgb).ToArray();
+        Color? best = null;
+        var bestDistance = -1;
+        // Randomized, reasonably saturated colors, selecting a well-separated candidate.
+        // No finite palette wraparound and no unnecessary changes to established colors.
+        for (var attempt = 0; attempt < 128; attempt++)
+        {
+            var candidate = Color.FromArgb(random.Next(35, 241), random.Next(35, 241), random.Next(35, 241));
+            if (Math.Max(candidate.R, Math.Max(candidate.G, candidate.B)) - Math.Min(candidate.R, Math.Min(candidate.G, candidate.B)) < 65)
+                continue;
+            var distance = occupied.Length == 0 ? int.MaxValue : occupied.Min(color =>
+                (color.R - candidate.R) * (color.R - candidate.R) +
+                (color.G - candidate.G) * (color.G - candidate.G) +
+                (color.B - candidate.B) * (color.B - candidate.B));
+            if (distance > bestDistance && distance > 0)
+            {
+                best = candidate;
+                bestDistance = distance;
+            }
+        }
+        if (best.HasValue)
+            return best.Value;
+        // Unlikely dense-color fallback: still never choose an exact occupied color.
+        var used = occupied.Select(color => color.ToArgb() & 0xffffff).ToHashSet();
+        var start = random.Next(0x1000000);
+        for (var offset = 0; offset < 0x1000000; offset++)
+        {
+            var rgb = (start + offset) & 0xffffff;
+            if (!used.Contains(rgb))
+                return Color.FromArgb(255, (rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255);
+        }
+        throw new InvalidOperationException("No unused part layer color is available.");
+    }
+
+    public Color GetOrAssignPartColor(RhinoDoc doc, AssemblyRecord assembly, PartRecord part, bool colorizeParts = true)
+    {
+        var existing = FindPartLayerColor(doc, assembly.Name, part.Name);
+        Color color;
+        if (existing.HasValue || part.LayerColorArgb.HasValue)
+            color = existing ?? Color.FromArgb(part.LayerColorArgb!.Value);
+        else
+        {
+            // Older documents and operator color overrides may not yet be represented
+            // in the saved record. Include their live colors before allocating a new one.
+            var used = new List<Color>();
+            foreach (var other in assembly.Parts.Where(other => other.Id != part.Id))
+            {
+                var live = FindPartLayerColor(doc, assembly.Name, other.Name);
+                if (live.HasValue)
+                    other.LayerColorArgb = live.Value.ToArgb();
+                if (other.LayerColorArgb.HasValue)
+                    used.Add(Color.FromArgb(other.LayerColorArgb.Value));
+            }
+            color = ChoosePartColor(part.Name, colorizeParts, used);
+        }
+        part.LayerColorArgb = color.ToArgb();
+        return color;
     }
 
     /// <summary>Existing original layers are the color authority, including user custom colors.</summary>

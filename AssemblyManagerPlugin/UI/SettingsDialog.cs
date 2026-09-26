@@ -14,10 +14,15 @@ public sealed class SettingsDialog : Dialog<bool>
     private readonly TextBox _defaultPartPrefix = new() { Width = 120 };
     private readonly TextBox _defaultComponentPrefix = new() { Width = 120 };
     private readonly CheckBox _colorizeParts = new() { Text = "Colorize generated part layers" };
+    private readonly CheckBox _enableLinkedAssemblies = new()
+    {
+        Text = "Enable linked assemblies",
+        ToolTip = "Emergency switch for linked-assembly tracking and updates. Turn off automatic propagation instead when you only want to update assemblies manually."
+    };
     private readonly CheckBox _automaticallyPropagateChanges = new()
     {
         Text = "Automatically propagate changes in assembly",
-        ToolTip = "When off, linked edits wait until you click Update Assembly. Object links and placement transforms continue to be tracked."
+        ToolTip = "Off by default. When off, edits and recategorization wait until you click Update Assembly. Links and placement transforms are still tracked while linked assemblies are enabled."
     };
     private readonly TextBox _lengthTolerance = new() { Width = 120 };
     private readonly TextBox _areaTolerance = new() { Width = 120 };
@@ -39,7 +44,11 @@ public sealed class SettingsDialog : Dialog<bool>
         _defaultPartPrefix.Text = saved.AssemblyManager.DefaultPartPrefix;
         _defaultComponentPrefix.Text = saved.AssemblyManager.DefaultComponentPrefix;
         _colorizeParts.Checked = saved.AssemblyManager.ColorizeParts;
+        _enableLinkedAssemblies.Checked = saved.AssemblyManager.EnableLinkedAssemblies;
         _automaticallyPropagateChanges.Checked = saved.AssemblyManager.AutomaticallyPropagateChangesInAssembly;
+        _automaticallyPropagateChanges.Enabled = saved.AssemblyManager.EnableLinkedAssemblies;
+        _enableLinkedAssemblies.CheckedChanged += (_, _) =>
+            _automaticallyPropagateChanges.Enabled = _enableLinkedAssemblies.Checked == true;
         _lengthTolerance.Text = FormatDouble(saved.AssemblyManager.CategorizationLengthTolerance);
         _areaTolerance.Text = FormatDouble(saved.AssemblyManager.CategorizationAreaTolerance);
         _volumeTolerance.Text = FormatDouble(saved.AssemblyManager.CategorizationVolumeTolerance);
@@ -70,6 +79,7 @@ public sealed class SettingsDialog : Dialog<bool>
         layout.AddRow(new Label { Text = "Default Part Prefix" }, _defaultPartPrefix);
         layout.AddRow(new Label { Text = "Default Component Prefix" }, _defaultComponentPrefix);
         layout.AddRow(new Label { Text = string.Empty }, _colorizeParts);
+        layout.AddRow(new Label { Text = string.Empty }, _enableLinkedAssemblies);
         layout.AddRow(new Label { Text = string.Empty }, _automaticallyPropagateChanges);
         layout.AddRow(new Label { Text = "Length / Edge Tolerance" }, _lengthTolerance);
         layout.AddRow(new Label { Text = "Area Tolerance" }, _areaTolerance);
@@ -130,10 +140,19 @@ public sealed class SettingsDialog : Dialog<bool>
         }
 
         var saved = _settings.Load();
+        if (saved.AssemblyManager.EnableLinkedAssemblies && _enableLinkedAssemblies.Checked != true)
+        {
+            var confirm = MessageBox.Show(this,
+                "Disable linked-assembly tracking and updates? If an assembly changes while linking is off, Gazelle will protect it from updates until you restore its previous state or recreate it. To keep placement tracking and update manually, leave linking enabled and turn off automatic propagation instead.",
+                MessageBoxButtons.YesNo, MessageBoxType.Warning);
+            if (confirm != DialogResult.Yes)
+                return;
+        }
         saved.LayoutTemplatePath = path;
         saved.AssemblyManager.DefaultPartPrefix = string.IsNullOrWhiteSpace(_defaultPartPrefix.Text) ? "P" : _defaultPartPrefix.Text.Trim();
         saved.AssemblyManager.DefaultComponentPrefix = string.IsNullOrWhiteSpace(_defaultComponentPrefix.Text) ? "C" : _defaultComponentPrefix.Text.Trim();
         saved.AssemblyManager.ColorizeParts = _colorizeParts.Checked == true;
+        saved.AssemblyManager.EnableLinkedAssemblies = _enableLinkedAssemblies.Checked == true;
         saved.AssemblyManager.AutomaticallyPropagateChangesInAssembly = _automaticallyPropagateChanges.Checked == true;
         saved.AssemblyManager.CategorizationLengthTolerance = lengthTolerance;
         saved.AssemblyManager.CategorizationAreaTolerance = areaTolerance;
@@ -141,8 +160,17 @@ public sealed class SettingsDialog : Dialog<bool>
         saved.AssemblyManager.CategorizationArrangementTolerance = arrangementTolerance;
         saved.AssemblyManager.DebugCategorization = _debugCategorization.Checked == true;
         saved.LayPartsFlat.PartSpacing = layFlatSpacing;
-        _settings.Save(saved);
-        Close(true);
+        try
+        {
+            _settings.Save(saved);
+            Close(true);
+        }
+        catch (Exception ex)
+        {
+            // Suspension can refuse a preference change while an update is in progress.
+            // Keep the dialog open and surface the reason after settings roll back.
+            MessageBox.Show(this, ex.Message, MessageBoxType.Error);
+        }
     }
 
     private static void AddSectionHeader(DynamicLayout layout, string text)

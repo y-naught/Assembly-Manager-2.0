@@ -83,6 +83,7 @@ public sealed class AssemblyRepository
             assembly.Components ??= new List<ComponentRecord>();
             assembly.Parts ??= new List<PartRecord>();
             assembly.Hardware ??= new List<HardwareRecord>();
+            assembly.PendingComponentUpdates ??= new List<PendingComponentUpdateRecord>();
             assembly.GeometryReferences ??= new List<GeometryReferenceRecord>();
             assembly.NestingEstimates ??= new List<NestingEstimateRecord>();
             assembly.LinkGraph ??= new AssemblyLinkGraphRecord();
@@ -96,6 +97,15 @@ public sealed class AssemblyRepository
             assembly.LinkGraph.Conflicts ??= new List<LinkConflictRecord>();
             assembly.LinkGraph.SourceComponentInstances ??= new List<SourceComponentInstanceRecord>();
             ValidateAssemblyCollections(assembly);
+
+            foreach (var pending in assembly.PendingComponentUpdates)
+            {
+                pending.AddedObjectIds ??= new List<Guid>();
+                pending.InstanceIds ??= new List<Guid>();
+                pending.MemberNodeIdsByInstance ??= new Dictionary<Guid, List<Guid>>();
+                if (pending.MemberNodeIdsByInstance.Values.Any(ids => ids is null))
+                    throw new InvalidOperationException($"Assembly '{assembly.Name}' has an invalid pending component membership snapshot.");
+            }
 
             foreach (var component in assembly.Components)
             {
@@ -238,6 +248,21 @@ public sealed class AssemblyRepository
         var referencesBySource = validReferences
             .GroupBy(reference => reference.SourceObjectId)
             .ToDictionary(group => group.Key, group => group.ToList());
+        // Normalization also runs for current graphs on every load/save. Index the
+        // recovery records once so checking N legacy references does not repeatedly
+        // scan all N nodes and edges during ordinary copied-component placement.
+        // Preserve first-match behavior here; the identity validator below still
+        // rejects duplicate node/edge identities instead of silently repairing them.
+        var nodesByObject = assembly.LinkGraph.Nodes.GroupBy(node => node.ObjectId)
+            .ToDictionary(group => group.Key, group => group.First());
+        var sourceNodesByObject = assembly.LinkGraph.Nodes
+            .Where(node => string.Equals(node.Role, AssemblyLinkRoles.Source, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(node => node.ObjectId).ToDictionary(group => group.Key, group => group.First());
+        var nodesById = assembly.LinkGraph.Nodes.GroupBy(node => node.Id)
+            .ToDictionary(group => group.Key, group => group.First());
+        var edgesByEndpoints = assembly.LinkGraph.Edges.GroupBy(edge => (edge.ParentNodeId, edge.ChildNodeId))
+            .ToDictionary(group => group.Key, group => group.First());
+        var edgeIds = assembly.LinkGraph.Edges.Select(edge => edge.Id).ToHashSet();
 
         foreach (var reference in assembly.GeometryReferences)
         {
@@ -249,10 +274,7 @@ public sealed class AssemblyRepository
             var componentId = assembly.Components.FirstOrDefault(component =>
                 string.Equals(component.Name, reference.ComponentName, StringComparison.OrdinalIgnoreCase))?.Id ?? Guid.Empty;
 
-            var sourceNode = assembly.LinkGraph.Nodes.FirstOrDefault(node =>
-                node.ObjectId == reference.SourceObjectId &&
-                string.Equals(node.Role, AssemblyLinkRoles.Source, StringComparison.OrdinalIgnoreCase));
-            if (sourceNode is null)
+            if (!sourceNodesByObject.TryGetValue(reference.SourceObjectId, out var sourceNode))
             {
                 sourceNode = new AssemblyLinkNodeRecord
                 {
@@ -267,10 +289,12 @@ public sealed class AssemblyRepository
                     SourceLocator = $"RhinoObject:{reference.SourceObjectId:D}"
                 };
                 assembly.LinkGraph.Nodes.Add(sourceNode);
+                sourceNodesByObject.Add(sourceNode.ObjectId, sourceNode);
+                nodesByObject.TryAdd(sourceNode.ObjectId, sourceNode);
+                nodesById.TryAdd(sourceNode.Id, sourceNode);
             }
 
-            var childNode = assembly.LinkGraph.Nodes.FirstOrDefault(node => node.ObjectId == reference.TargetObjectId);
-            if (childNode is null)
+            if (!nodesByObject.TryGetValue(reference.TargetObjectId, out var childNode))
             {
                 childNode = new AssemblyLinkNodeRecord
                 {
@@ -284,11 +308,13 @@ public sealed class AssemblyRepository
                     ComponentId = componentId
                 };
                 assembly.LinkGraph.Nodes.Add(childNode);
+                nodesByObject.Add(childNode.ObjectId, childNode);
+                nodesById.TryAdd(childNode.Id, childNode);
+                if (string.Equals(childNode.Role, AssemblyLinkRoles.Source, StringComparison.OrdinalIgnoreCase))
+                    sourceNodesByObject.TryAdd(childNode.ObjectId, childNode);
             }
 
-            var existingEdge = assembly.LinkGraph.Edges.FirstOrDefault(edge =>
-                edge.ParentNodeId == sourceNode.Id && edge.ChildNodeId == childNode.Id);
-            if (existingEdge is not null)
+            if (edgesByEndpoints.TryGetValue((sourceNode.Id, childNode.Id), out var existingEdge))
             {
                 var conflictingReferenceId = reference.Id != Guid.Empty && reference.Id != existingEdge.Id;
                 if (conflictingReferenceId ||
@@ -307,7 +333,7 @@ public sealed class AssemblyRepository
             }
 
             var edgeId = reference.Id;
-            if (edgeId == Guid.Empty || assembly.LinkGraph.Edges.Any(edge => edge.Id == edgeId))
+            if (edgeId == Guid.Empty || edgeIds.Contains(edgeId))
                 edgeId = Guid.NewGuid();
 
             var sourceObject = doc?.Objects.FindId(reference.SourceObjectId);
@@ -336,6 +362,8 @@ public sealed class AssemblyRepository
                 UpdatedAt = reference.UpdatedAt
             };
             assembly.LinkGraph.Edges.Add(edge);
+            edgesByEndpoints.Add((sourceNode.Id, childNode.Id), edge);
+            edgeIds.Add(edge.Id);
 
             if (unsupportedBlockLeaf)
             {
@@ -357,7 +385,7 @@ public sealed class AssemblyRepository
                 continue;
 
             edge.Status = AssemblyLinkStatuses.Conflict;
-            var childNode = assembly.LinkGraph.Nodes.FirstOrDefault(node => node.Id == edge.ChildNodeId);
+            nodesById.TryGetValue(edge.ChildNodeId, out var childNode);
             if (childNode is not null)
                 childNode.Status = AssemblyLinkStatuses.Conflict;
             AddRepositoryConflict(
@@ -411,6 +439,7 @@ public sealed class AssemblyRepository
         if (assembly.Components.Any(component => component is null) ||
             assembly.Parts.Any(part => part is null) ||
             assembly.Hardware.Any(hardware => hardware is null) ||
+            assembly.PendingComponentUpdates.Any(pending => pending is null) ||
             assembly.GeometryReferences.Any(reference => reference is null) ||
             assembly.LinkGraph.Nodes.Any(node => node is null) ||
             assembly.LinkGraph.Edges.Any(edge => edge is null) ||

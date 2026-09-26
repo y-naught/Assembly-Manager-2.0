@@ -17,6 +17,8 @@ public sealed class ReferenceUpdateService
     private readonly AssemblyCategorizationReconciliationService _categorization;
     private readonly FlatPartSynchronizationService? _flatParts;
     private readonly Action<string> _updateFeedback;
+    private readonly ComponentUpdateService? _componentUpdates;
+    private readonly LinkedAssemblySafetyService? _linkSafety;
 
     public ReferenceUpdateService(
         AssemblyRepository repository,
@@ -25,7 +27,9 @@ public sealed class ReferenceUpdateService
         GeometryFingerprintService fingerprints,
         AssemblyCategorizationReconciliationService categorization,
         FlatPartSynchronizationService? flatParts = null,
-        Action<string>? updateFeedback = null)
+        Action<string>? updateFeedback = null,
+        ComponentUpdateService? componentUpdates = null,
+        LinkedAssemblySafetyService? linkSafety = null)
     {
         _repository = repository;
         _history = history;
@@ -34,15 +38,38 @@ public sealed class ReferenceUpdateService
         _categorization = categorization;
         _flatParts = flatParts;
         _updateFeedback = updateFeedback ?? (message => RhinoApp.WriteLine(message));
+        _componentUpdates = componentUpdates;
+        _linkSafety = linkSafety;
     }
 
     public int RefreshAssemblyReferences(RhinoDoc doc, string assemblyName)
     {
+        _linkSafety?.EnsureEnabled();
         var store = _repository.Load(doc);
         var assembly = store.FindAssembly(assemblyName)
             ?? throw new InvalidOperationException($"Assembly '{assemblyName}' was not found.");
+        var suspensionMayResolve = _linkSafety?.IsAssemblyBlocked(doc, assembly.Id) == true;
+        _linkSafety?.EnsureCanUpdate(doc, assembly.Id);
+        if (suspensionMayResolve)
+        {
+            // A restored baseline resolves its safety issue before this refresh. Do not
+            // save the pre-validation snapshot and inadvertently reopen that issue.
+            store = _repository.Load(doc);
+            assembly = store.FindAssembly(assemblyName)!;
+        }
         using var feedback = new UpdateFeedbackScope(_updateFeedback,
             $"Gazelle updating assembly '{assemblyName}'...");
+        if (assembly.PendingComponentUpdates.Count > 0)
+        {
+            if (_componentUpdates is null)
+                throw new InvalidOperationException("Component update support is unavailable. Load the current Gazelle plugin before updating this assembly.");
+            _updateFeedback($"Gazelle applying staged component additions in '{assemblyName}'...");
+            using var mutation = AssemblyLinkMutationGate.Enter();
+            _componentUpdates.ApplyPending(doc, store, assembly);
+            // Save the complete structural registration before normal refresh. This makes a
+            // retry idempotent if categorization or a downstream output subsequently fails.
+            _repository.Save(doc, store);
+        }
         var openConflictsBefore = assembly.LinkGraph.Conflicts.Count(conflict =>
             string.Equals(conflict.Status, AssemblyLinkStatuses.Open, StringComparison.OrdinalIgnoreCase));
         var previousIssueIds = OpenIssueIds(store);
@@ -52,7 +79,9 @@ public sealed class ReferenceUpdateService
             .Select(node => node.ObjectId).ToHashSet();
         // One physical input can feed several assemblies. Updating it through a selected
         // assembly must not leave sibling consumers stale after accepting an original edit.
-        var initialSeeds = store.Assemblies.SelectMany(linkedAssembly => linkedAssembly.LinkGraph.Nodes
+        var initialSeeds = store.Assemblies
+            .Where(linkedAssembly => _linkSafety?.IsAssemblyBlocked(doc, linkedAssembly.Id) != true)
+            .SelectMany(linkedAssembly => linkedAssembly.LinkGraph.Nodes
             .Where(node => selectedSourceIds.Contains(node.ObjectId) &&
                            string.Equals(node.Role, AssemblyLinkRoles.Source, StringComparison.OrdinalIgnoreCase))
             .Select(node => new PropagationSeed(linkedAssembly.Id, node.Id, RebuildQuarantined: true)))
@@ -105,6 +134,8 @@ public sealed class ReferenceUpdateService
     /// </summary>
     public int RefreshDescendantsFromSources(RhinoDoc doc, IEnumerable<Guid> sourceObjectIds)
     {
+        if (_linkSafety?.IsEnabled == false)
+            return 0;
         var sourceIds = sourceObjectIds.Where(id => id != Guid.Empty).Distinct().ToHashSet();
         if (sourceIds.Count == 0)
             return 0;
@@ -113,6 +144,7 @@ public sealed class ReferenceUpdateService
         var openConflictsBefore = CountOpenConflicts(store);
         var previousIssueIds = OpenIssueIds(store);
         var initialSeeds = store.Assemblies
+            .Where(assembly => assembly.PendingComponentUpdates.Count == 0 && _linkSafety?.IsAssemblyBlocked(doc, assembly.Id) != true)
             .SelectMany(assembly => assembly.LinkGraph.Nodes
                 .Where(node => sourceIds.Contains(node.ObjectId) &&
                                string.Equals(node.Role, AssemblyLinkRoles.Source, StringComparison.OrdinalIgnoreCase))
@@ -154,6 +186,8 @@ public sealed class ReferenceUpdateService
         IEnumerable<(Guid AssemblyId, Guid NodeId)> requestedNodes,
         bool refreshDescendants = true)
     {
+        if (_linkSafety?.IsEnabled == false)
+            return 0;
         var requests = requestedNodes
             .Where(request => request.AssemblyId != Guid.Empty && request.NodeId != Guid.Empty)
             .Distinct()
@@ -168,7 +202,8 @@ public sealed class ReferenceUpdateService
 
         foreach (var request in requests)
         {
-            if (!assembliesById.TryGetValue(request.AssemblyId, out var assembly))
+            if (!assembliesById.TryGetValue(request.AssemblyId, out var assembly)
+                || _linkSafety?.IsAssemblyBlocked(doc, assembly.Id) == true)
                 continue;
 
             var originalNode = assembly.LinkGraph.Nodes.FirstOrDefault(node => node.Id == request.NodeId);
@@ -427,13 +462,14 @@ public sealed class ReferenceUpdateService
         var sharedSourceHasBlockingConflict = store.Assemblies.Any(sourceAssembly =>
             sourceAssembly.LinkGraph.Nodes.Any(candidateSourceNode =>
                 candidateSourceNode.ObjectId == sourceNode.ObjectId &&
-                string.Equals(candidateSourceNode.Role, AssemblyLinkRoles.Source, StringComparison.OrdinalIgnoreCase) &&
-                sourceAssembly.LinkGraph.Conflicts.Any(conflict =>
+                (_linkSafety?.IsAssemblyBlocked(doc, sourceAssembly.Id) == true ||
+                 (string.Equals(candidateSourceNode.Role, AssemblyLinkRoles.Source, StringComparison.OrdinalIgnoreCase) &&
+                  sourceAssembly.LinkGraph.Conflicts.Any(conflict =>
                     conflict.NodeId == candidateSourceNode.Id &&
                     string.Equals(conflict.Status, AssemblyLinkStatuses.Open, StringComparison.OrdinalIgnoreCase) &&
                     (string.Equals(conflict.ConflictType, AssemblyLinkConflictTypes.DuplicateIdentity, StringComparison.OrdinalIgnoreCase) ||
                      string.Equals(conflict.ConflictType, AssemblyLinkConflictTypes.SourceSplit, StringComparison.OrdinalIgnoreCase) ||
-                     string.Equals(conflict.ConflictType, AssemblyLinkConflictTypes.TransformUnresolved, StringComparison.OrdinalIgnoreCase)))));
+                     string.Equals(conflict.ConflictType, AssemblyLinkConflictTypes.TransformUnresolved, StringComparison.OrdinalIgnoreCase)))))));
         if (sharedSourceHasBlockingConflict)
         {
             failureMessage = "The design source has an unresolved identity, structural, or transform conflict in at least one assembly graph, so it cannot receive an automatic promotion.";
@@ -677,7 +713,9 @@ public sealed class ReferenceUpdateService
         {
             var seed = pending.Dequeue();
             if (!visitedSourceNodes.Add((seed.AssemblyId, seed.SourceNodeId)) ||
-                !assembliesById.TryGetValue(seed.AssemblyId, out var assembly))
+                !assembliesById.TryGetValue(seed.AssemblyId, out var assembly) ||
+                assembly.PendingComponentUpdates.Count > 0 ||
+                _linkSafety?.IsAssemblyBlocked(doc, assembly.Id) == true)
             {
                 continue;
             }
@@ -854,7 +892,7 @@ public sealed class ReferenceUpdateService
             if (result.RequiresCopiedComponentRebuild)
             {
                 RhinoApp.WriteLine(
-                    "Component categories changed in '{0}', and the preserved COPIED COMPONENTS output no longer has exactly one representative per component number. Review/remove obsolete managed copies before running Copy / Orient Components again.",
+                    "Some component categories in '{0}' have no COPIED COMPONENTS view. Use PlaceComponent to add the missing views when needed. Existing views remain tracked, including multiple views of the same component.",
                     outcome.AssemblyName);
             }
         }
@@ -1185,6 +1223,28 @@ public sealed class ReferenceUpdateService
         effectiveTransform = Transform.Identity;
         failureMessage = string.Empty;
 
+        if (string.Equals(edge.Recipe, AssemblyLinkRecipes.HardwareCopy, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!HardwareMetadata.TryGetFromObject(parentObject, out _) ||
+                !HardwareMetadata.TryGetFromObject(childObject, out _))
+            {
+                failureMessage = "A whole-hardware link has lost its hardware identity. Review it before updating.";
+                return false;
+            }
+            if (!edge.ParentToChildTransform.TryToTransform(out effectiveTransform))
+            {
+                failureMessage = "The stored hardware placement is invalid.";
+                return false;
+            }
+            geometry = parentObject.Geometry.Duplicate();
+            if (geometry is not null && geometry.Transform(effectiveTransform))
+                return true;
+            geometry?.Dispose();
+            geometry = default!;
+            failureMessage = "Rhino could not duplicate the linked hardware at its stored placement.";
+            return false;
+        }
+
         if (string.Equals(edge.Recipe, AssemblyLinkRecipes.BlockDefinitionPart, StringComparison.OrdinalIgnoreCase))
         {
             failureMessage = "This linked output came from a block-definition leaf. Gazelle preserved it because the stored link does not yet identify a unique definition path for safe regeneration.";
@@ -1458,6 +1518,7 @@ public sealed class ReferenceUpdateService
             Mesh mesh => doc.Objects.Replace(objectId, mesh),
             Extrusion extrusion => doc.Objects.Replace(objectId, extrusion),
             Surface surface => doc.Objects.Replace(objectId, surface),
+            InstanceReferenceGeometry instance => doc.Objects.Replace(objectId, instance, false),
             _ => false
         };
     }

@@ -7,6 +7,7 @@ using AssemblyManagerPlugin.Geometry;
 using Rhino;
 using Rhino.DocObjects;
 using Rhino.Geometry;
+using Rhino.Display;
 
 namespace AssemblyManagerPlugin.Services;
 
@@ -171,12 +172,15 @@ public sealed class NestingEstimateService
             throw new InvalidOperationException("Material estimate tables must be placed in layout/page space.");
 
         var report = EstimateMaterials(doc, assemblyName);
-        var objectIds = DrawReportTable(doc, report, origin);
+        var assembly = _repository.Load(doc).FindAssembly(assemblyName)
+            ?? throw new InvalidOperationException($"Assembly '{assemblyName}' was not found.");
+        var hardware = BomService.BuildHardwareLines(assembly.Hardware);
+        var objectIds = DrawReportTable(doc, report, hardware, origin);
         _history.Record(doc, new ActionHistoryEntry
         {
             CommandName = "PlaceMaterialEstimate",
             AssemblyName = assemblyName,
-            Summary = $"Placed material estimate table with {report.Lines.Count} stock shape line(s)."
+            Summary = $"Placed material and hardware table with {report.Lines.Count} stock shape line(s) and {hardware.Count} hardware line(s)."
         });
         doc.Views.Redraw();
         return objectIds.Count;
@@ -417,7 +421,7 @@ public sealed class NestingEstimateService
         };
     }
 
-    private List<Guid> DrawReportTable(RhinoDoc doc, MaterialEstimateReportRecord report, Point3d origin)
+    private List<Guid> DrawReportTable(RhinoDoc doc, MaterialEstimateReportRecord report, IReadOnlyList<BomLineRecord> hardware, Point3d origin)
     {
         _layers.EnsureRootLayers(doc);
         var layerIndex = _layers.EnsureLayerIndex(doc, $"{AssemblyManagerConstants.AnnotationRootLayer}::Material Estimates", Color.Black);
@@ -425,6 +429,7 @@ public sealed class NestingEstimateService
         {
             LayerIndex = layerIndex,
             Space = ActiveSpace.PageSpace,
+            ViewportId = (doc.Views.ActiveView as RhinoPageView)?.MainViewport.Id ?? Guid.Empty,
             ColorSource = ObjectColorSource.ColorFromObject,
             ObjectColor = Color.Black
         };
@@ -439,7 +444,7 @@ public sealed class NestingEstimateService
             ("Area", 0.7),
             ("Parts / Notes", 2.15)
         };
-        var rows = BuildTableRows(report, columns.Select(column => column.Header).ToArray());
+        var rows = BuildTableRows(doc, report, hardware, columns.Select(column => column.Header).ToArray());
         var columnWidths = CalculateColumnWidths(rows, columns);
         var tableWidth = columnWidths.Sum();
         var ids = new List<Guid>();
@@ -498,11 +503,11 @@ public sealed class NestingEstimateService
         return ids;
     }
 
-    private static List<TableRow> BuildTableRows(MaterialEstimateReportRecord report, string[] headers)
+    private List<TableRow> BuildTableRows(RhinoDoc doc, MaterialEstimateReportRecord report, IReadOnlyList<BomLineRecord> hardware, string[] headers)
     {
         var rows = new List<TableRow>
         {
-            TableRow.Section($"Material Estimate - {report.AssemblyName}"),
+            TableRow.Section($"Material & Hardware Estimate - {report.AssemblyName}"),
             new(headers)
         };
 
@@ -516,6 +521,24 @@ public sealed class NestingEstimateService
                 line.EstimatedSheetCount.ToString(CultureInfo.InvariantCulture),
                 Format(line.TotalPartArea),
                 PartSummary(line.Parts)));
+        }
+
+        if (hardware.Count > 0)
+        {
+            rows.Add(TableRow.Section("Hardware"));
+            rows.Add(new TableRow("Item", "Description", "Material", "Unit", "Qty", string.Empty, "Source"));
+            foreach (var line in hardware)
+            {
+                var materialLabel = _materials.GetMaterialLabel(doc, NormalizeMaterialIdForLookup(line.MaterialId));
+                rows.Add(new TableRow(
+                    line.Item,
+                    line.Description,
+                    string.IsNullOrWhiteSpace(materialLabel) ? "TBD" : materialLabel,
+                    line.Unit,
+                    line.Quantity.ToString("0.###", CultureInfo.InvariantCulture),
+                    string.Empty,
+                    line.Source));
+            }
         }
 
         if (report.UnaccountedObjects.Count > 0)

@@ -264,6 +264,16 @@ internal static partial class Program
         var fixtureDocs = new List<RhinoDoc>();
         var scenarios = new[]
         {
+            // Exercise native file/page initialization before accumulating the many
+            // geometry-only fixture documents below in this hidden console host.
+            "link-master-file-roundtrip",
+            "bom-table-mixed", "bom-table-hardware-only", "bom-table-no-hardware",
+            "bom-fitted-page",
+            "placed-bom-columns", "placed-bom-wrap-first", "placed-bom-shrink", "placed-bom-paper-units",
+            "placed-bom-validation", "placed-bom-empty-and-single-column",
+            "place-component-multiple-views", "place-component-first-view", "place-component-validation", "place-component-safety",
+            "multi-copy-same-occurrence", "multi-copy-category-merge", "multi-copy-missing-category",
+            "multi-copy-component-addition",
             "source-replace", "source-scale", "original-replace",
             "source-replace-tolerance-overlap", "original-replace-tolerance-overlap",
             "source-replace-unrelated-missing", "source-replace-unrelated-unsupported",
@@ -285,13 +295,52 @@ internal static partial class Program
             "update-paused-shared-source", "update-paused-service-restart-reenable", "update-paused-stock-original-edit",
             "update-flat-dependent-active", "update-flat-dependent-inactive",
             "update-feedback-manual-flat", "update-feedback-auto-batch-flat",
-            "update-feedback-noop", "update-feedback-document-issues", "update-feedback-failure"
+            "update-feedback-noop", "update-feedback-document-issues", "update-feedback-failure",
+            "component-add-new-part", "component-add-existing-part", "component-add-solid-hardware",
+            "component-add-solid-hardware-name-collision",
+            "component-add-block-hardware", "component-add-restart-manual", "component-add-copied-member", "component-add-unrelated-original",
+            "component-add-symmetric-occurrence", "component-add-singleton", "component-add-nonrepresentative",
+            "component-add-legacy-cohort", "component-add-independent-occurrences", "component-add-existing-component",
+            "component-reject-omitted-member", "component-reject-linked-member",
+            "component-reject-stale-group", "component-reject-stale-retained-geometry", "component-reject-reserved-addition",
+            "component-reject-shared-copied-group",
+            "placement-hardware-move-refresh", "placement-hardware-definition-change", "placement-local-metadata", "placement-repository-normalization",
+            "link-settings-defaults", "link-master-unchanged", "link-master-source-edit", "link-master-group-change",
+            "link-master-restart", "link-master-unrelated-assembly", "link-master-created-off", "link-master-recreated",
+            "color-expanded-palette", "color-persistence", "color-component-disabled"
         };
+        var filters = (System.Environment.GetEnvironmentVariable("GAZELLE_TEST_FILTER") ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (filters.Length > 0)
+            scenarios = scenarios.Where(scenario => filters.Any(filter => scenario.StartsWith(filter, StringComparison.Ordinal))).ToArray();
+        else
+            // Page-view initialization can stall in a hidden RhinoCore console host.
+            // Run native layout cases explicitly in a fresh process with the BOM filter.
+            scenarios = scenarios.Where(scenario => !scenario.StartsWith("bom-table-", StringComparison.Ordinal)
+                && scenario != "bom-fitted-page").ToArray();
         foreach (var scenario in scenarios)
         {
             try
             {
-                if (scenario.StartsWith("update-", StringComparison.Ordinal))
+                if (scenario.StartsWith("placed-bom-", StringComparison.Ordinal) || scenario == "bom-fitted-page")
+                    RunPlacedBomScenario(core, services, scenario, fixtureDocs);
+                else if (scenario.StartsWith("place-component-", StringComparison.Ordinal))
+                    RunPlaceComponentScenario(core, services, scenario, fixtureDocs);
+                else if (scenario.StartsWith("multi-copy-", StringComparison.Ordinal))
+                    RunMultiCopyReconciliationScenario(core, services, scenario, fixtureDocs);
+                else if (scenario.StartsWith("color-", StringComparison.Ordinal))
+                    RunPartColorScenario(core, services, scenario, fixtureDocs);
+                else if (scenario.StartsWith("link-", StringComparison.Ordinal))
+                    RunLinkSwitchScenario(core, services, scenario, fixtureDocs);
+                else if (scenario.StartsWith("placement-", StringComparison.Ordinal))
+                    RunPlacementPerformanceScenario(core, services, scenario, fixtureDocs);
+                else if (scenario.StartsWith("bom-table-", StringComparison.Ordinal))
+                    RunBomTableScenario(core, services, scenario, fixtureDocs);
+                else if (scenario is "component-add-legacy-cohort" or "component-add-independent-occurrences" or "component-add-existing-component")
+                    RunComponentOccurrenceScenario(core, services, scenario, fixtureDocs);
+                else if (scenario.StartsWith("component-", StringComparison.Ordinal))
+                    RunComponentUpdateScenario(core, services, scenario, fixtureDocs);
+                else if (scenario.StartsWith("update-", StringComparison.Ordinal))
                     RunAssemblyUpdateScenario(core, services, scenario, fixtureDocs);
                 else if (scenario.StartsWith("layer-", StringComparison.Ordinal))
                     RunLayerScenario(core, services, scenario, fixtureDocs);
@@ -524,6 +573,10 @@ internal static partial class Program
             || layer.FullPath.EndsWith("::" + changedPart.Name + "::3D", StringComparison.Ordinal)),
             "Original, copied component and flat output must all move to the correct part layer.");
         var changedColor = changedLayers[0].Color.ToArgb();
+        Require(changedPart.LayerColorArgb == changedColor, "The category must save its assigned layer color.");
+        if (scenario.EndsWith("palette-wrap", StringComparison.Ordinal))
+            Require(!LayerService.DefaultPartColors.Any(color => color.ToArgb() == changedColor),
+                "Categories beyond the predefined palette must receive a new color instead of wrapping.");
         Require(changedColor != oldColor.ToArgb(), "An edited part moving into a new or different category must not inherit the old part color.");
         Require(changedLayers.All(layer => layer.Color.ToArgb() == changedColor), "All managed stages of the changed category must share its color.");
         var flatParentLayerIndex = services.Layers.FindLayerIndex(doc, LayerService.PartsPart(assembly.Name, changedPart.Name));
@@ -849,19 +902,25 @@ internal static partial class Program
         public LayerService Layers { get; } = new();
         public GeometryFingerprintService Fingerprints { get; } = new();
         public AssemblyLineageService Lineage { get; } = new();
+        public ComponentUpdateService ComponentUpdates { get; }
         public ReferenceUpdateService ReferenceUpdates { get; }
         public AssemblyLinkEventService LinkEvents { get; }
         public bool AutomaticallyPropagate { get; set; } = true;
+        public bool EnableLinkedAssemblies { get; set; } = true;
+        public bool ColorizeParts { get; set; } = true;
+        public LinkedAssemblySafetyService LinkSafety { get; }
         public List<string> UpdateFeedback { get; } = new();
 
         public RegressionServices()
         {
             var categorization = new AssemblyCategorizationReconciliationService(Fingerprints, Layers, Lineage);
             var flatParts = new FlatPartSynchronizationService(Layers, Fingerprints, new RegressionMaterialLibrary(), Lineage);
+            LinkSafety = new LinkedAssemblySafetyService(Repository, () => EnableLinkedAssemblies);
+            ComponentUpdates = new ComponentUpdateService(Repository, Layers, Fingerprints, Lineage, () => ColorizeParts);
             ReferenceUpdates = new ReferenceUpdateService(Repository, new DocumentActionHistorySink(Repository), Lineage, Fingerprints, categorization, flatParts,
-                updateFeedback: UpdateFeedback.Add);
+                updateFeedback: UpdateFeedback.Add, componentUpdates: ComponentUpdates, linkSafety: LinkSafety);
             LinkEvents = new AssemblyLinkEventService(Repository, ReferenceUpdates, Lineage, Fingerprints,
-                automaticPropagationEnabled: () => AutomaticallyPropagate);
+                automaticPropagationEnabled: () => AutomaticallyPropagate, componentUpdates: ComponentUpdates, linkSafety: LinkSafety);
         }
     }
 }

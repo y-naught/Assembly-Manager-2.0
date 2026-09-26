@@ -84,6 +84,7 @@ public static class AssemblyLinkMetadataKeys
 public static class AssemblyLinkRecipes
 {
     public const string DirectCopy = "DirectCopy";
+    public const string HardwareCopy = "HardwareCopy";
     public const string LayFlat = "LayFlat";
     public const string BlockDefinitionPart = "BlockDefinitionPart";
     public const string ManualRelink = "ManualRelink";

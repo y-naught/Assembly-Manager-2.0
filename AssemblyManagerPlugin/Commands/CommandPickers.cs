@@ -7,6 +7,33 @@ namespace AssemblyManagerPlugin;
 
 internal static class CommandPickers
 {
+    public static Guid? PickRegroupedComponent(RhinoDoc doc)
+    {
+        using var getter = new GetObject();
+        getter.SetCommandPrompt("Select a member of the regrouped component in ORIGINAL ASSEMBLIES");
+        getter.GroupSelect = false;
+        getter.SubObjectSelect = false;
+        getter.EnablePreSelect(false, true);
+        getter.Get();
+        if (getter.CommandResult() != Result.Success)
+            return null;
+        var obj = getter.Object(0).Object();
+        var groups = (obj?.GetGroupList() ?? Array.Empty<int>())
+            .Select(index => doc.Groups.FindIndex(index))
+            .Where(group => group is not null && !group.IsDeleted)
+            .ToList();
+        if (groups.Count == 0)
+        {
+            RhinoApp.WriteLine("Regroup all existing component members together with the additions, then run UpdateComponent again.");
+            return null;
+        }
+        if (groups.Count == 1)
+            return groups[0]!.Id;
+        var labels = groups.Select(group => $"{group!.Name} (group {group.Index})").ToList();
+        var selected = PickFromList(labels, "Select the complete replacement component group");
+        return selected is null ? null : groups[labels.IndexOf(selected)]!.Id;
+    }
+
     public static string? PickAssembly(RhinoDoc doc, string prompt)
     {
         var names = AssemblyManagerPlugin.Instance.Services.Repository.GetAssemblyNames(doc);

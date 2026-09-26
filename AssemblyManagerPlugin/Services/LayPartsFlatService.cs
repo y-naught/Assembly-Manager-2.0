@@ -134,8 +134,7 @@ public sealed class LayPartsFlatService
 
                 var part = item.Part;
                 var cam3dLayer = $"{LayerService.PartsPart(assemblyName, part.Name)}::3D";
-                var partColor = _layers.FindPartLayerColor(doc, assemblyName, part.Name) ??
-                                LayerService.PartColorForName(part.Name, pluginSettings.AssemblyManager.ColorizeParts);
+                var partColor = _layers.GetOrAssignPartColor(doc, assembly, part, pluginSettings.AssemblyManager.ColorizeParts);
                 _layers.EnsurePartLayerIndex(doc, LayerService.PartsPart(assemblyName, part.Name), partColor);
                 var camLayerIndex = _layers.EnsurePartLayerIndex(doc, cam3dLayer, partColor);
                 var attributes = item.SourceObject.Attributes.Duplicate();

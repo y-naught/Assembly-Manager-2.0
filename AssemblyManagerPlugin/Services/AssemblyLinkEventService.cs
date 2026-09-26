@@ -35,6 +35,8 @@ public sealed class AssemblyLinkEventService : IDisposable
     private readonly AssemblyLineageService _lineage;
     private readonly GeometryFingerprintService _fingerprints;
     private readonly Func<bool> _automaticPropagationEnabled;
+    private readonly ComponentUpdateService? _componentUpdates;
+    private readonly LinkedAssemblySafetyService? _linkSafety;
     private readonly ConcurrentDictionary<uint, bool> _deferredDocuments = new();
     private readonly ConcurrentDictionary<uint, ConcurrentQueue<LinkEventFact>> _queues = new();
     private readonly ConcurrentDictionary<uint, ConcurrentStack<Guid>> _activeCommandBatches = new();
@@ -48,16 +50,96 @@ public sealed class AssemblyLinkEventService : IDisposable
         ReferenceUpdateService referenceUpdates,
         AssemblyLineageService lineage,
         GeometryFingerprintService fingerprints,
-        Func<bool>? automaticPropagationEnabled = null)
+        Func<bool>? automaticPropagationEnabled = null,
+        ComponentUpdateService? componentUpdates = null,
+        LinkedAssemblySafetyService? linkSafety = null)
     {
         _repository = repository;
         _referenceUpdates = referenceUpdates;
         _lineage = lineage;
         _fingerprints = fingerprints;
         _automaticPropagationEnabled = automaticPropagationEnabled ?? (() => true);
+        _componentUpdates = componentUpdates;
+        _linkSafety = linkSafety;
     }
 
     public bool IsStarted => Volatile.Read(ref _started) != 0;
+
+    /// <summary>
+    /// Finish already captured placement bookkeeping before suspending the link system.
+    /// The durable safety snapshot then covers the exact point tracking stopped.
+    /// </summary>
+    public void RefreshLinkingPreference()
+    {
+        if (_linkSafety is null)
+            return;
+        if (Interlocked.Exchange(ref _processingIdle, 1) != 0)
+            throw new InvalidOperationException("Wait for the current assembly update before changing linked assembly settings.");
+        try
+        {
+            foreach (var entry in _queues.ToArray())
+            {
+                if (RhinoDoc.FromRuntimeSerialNumber(entry.Key) is not { } doc)
+                    continue;
+                var facts = Drain(entry.Value);
+                if (facts.Count > 0)
+                    ProcessFacts(doc, facts, propagateChanges: false);
+            }
+            _linkSafety.ApplyPreferenceToOpenDocuments();
+            if (!_linkSafety.IsEnabled)
+            {
+                _queues.Clear();
+                _deferredDocuments.Clear();
+                _activeCommandBatches.Clear();
+                _undoSnapshots.Clear();
+            }
+            else
+            {
+                foreach (var doc in RhinoDoc.OpenDocuments())
+                    Enqueue(doc.RuntimeSerialNumber, new PendingUpdateFact());
+            }
+        }
+        finally
+        {
+            Volatile.Write(ref _processingIdle, 0);
+        }
+    }
+
+    /// <summary>Registers an explicit component regroup without propagating geometry.</summary>
+    public ComponentUpdateResult StageComponentUpdate(
+        RhinoDoc doc, string assemblyName, Guid componentId, Guid regroupedGroupId)
+    {
+        ArgumentNullException.ThrowIfNull(doc);
+        _linkSafety?.EnsureEnabled();
+        if (_componentUpdates is null)
+            throw new InvalidOperationException("Component updates are not available in this service instance.");
+        var assembly = _repository.Load(doc).FindAssembly(assemblyName)
+            ?? throw new InvalidOperationException($"Assembly '{assemblyName}' was not found.");
+        _linkSafety?.EnsureCanUpdate(doc, assembly.Id);
+        if (UndoOrRedoIsActive(doc))
+            throw new InvalidOperationException("Wait for undo or redo to finish before updating a component.");
+        if (Interlocked.Exchange(ref _processingIdle, 1) != 0)
+            throw new InvalidOperationException("An assembly update is already in progress.");
+        var undoRecord = doc.UndoRecordingEnabled && !doc.UndoRecordingIsActive
+            ? doc.BeginUndoRecord("Gazelle Update Component") : 0u;
+        try
+        {
+            var facts = _queues.TryGetValue(doc.RuntimeSerialNumber, out var queue)
+                ? Drain(queue) : new List<LinkEventFact>();
+            ProcessFacts(doc, facts, propagateChanges: false);
+            using var mutation = AssemblyLinkMutationGate.Enter();
+            var result = _componentUpdates.Stage(doc, assemblyName, componentId, regroupedGroupId);
+            RhinoApp.WriteLine($"Gazelle staged {result.AddedObjectCount} added item(s) for the selected occurrence " +
+                $"of {result.ComponentName} in '{result.AssemblyName}'. Click Update Assembly to apply them and update its component category; other occurrences remain unchanged.");
+            return result;
+        }
+        finally
+        {
+            if (undoRecord != 0)
+                doc.EndUndoRecord(undoRecord);
+            Volatile.Write(ref _processingIdle, 0);
+        }
+    }
 
     /// <summary>
     /// Applies queued event bookkeeping first, then accepts safe deferred ORIGINAL ASSEMBLIES
@@ -67,10 +149,12 @@ public sealed class AssemblyLinkEventService : IDisposable
     public int UpdateAssembly(RhinoDoc doc, string assemblyName)
     {
         ArgumentNullException.ThrowIfNull(doc);
+        _linkSafety?.EnsureEnabled();
         if (UndoOrRedoIsActive(doc))
             throw new InvalidOperationException("Wait for undo or redo to finish before updating an assembly.");
         var assembly = _repository.Load(doc).FindAssembly(assemblyName)
             ?? throw new InvalidOperationException($"Assembly '{assemblyName}' was not found.");
+        _linkSafety?.EnsureCanUpdate(doc, assembly.Id);
         if (Interlocked.Exchange(ref _processingIdle, 1) != 0)
             throw new InvalidOperationException("An assembly update is already in progress.");
 
@@ -86,6 +170,20 @@ public sealed class AssemblyLinkEventService : IDisposable
             // Other assemblies still receive UUID/placement bookkeeping. The reference
             // updater includes shared-input/downstream consumers, not unrelated assemblies.
             ProcessFacts(doc, facts, propagateChanges: false);
+            var pendingStore = _repository.Load(doc);
+            var pendingAssembly = pendingStore.FindAssembly(assemblyName)!;
+            if (pendingAssembly.PendingComponentUpdates.Count > 0)
+            {
+                if (_componentUpdates is null)
+                    throw new InvalidOperationException("Component updates are not available in this service instance.");
+                RhinoApp.WriteLine("Gazelle applying staged component additions in '{0}'...", assemblyName);
+                using var mutation = AssemblyLinkMutationGate.Enter();
+                _componentUpdates.ApplyPending(doc, pendingStore, pendingAssembly);
+                _repository.Save(doc, pendingStore);
+            }
+            // Validate/materialize staged membership before promoting any deferred edits.
+            // The hold is now removed, so unrelated originals edited while staged can be
+            // accepted safely instead of being overwritten by the final source refresh.
             ProcessFacts(doc, Array.Empty<LinkEventFact>(), propagateChanges: true, assembly.Id,
                 prepareForManualUpdate: true);
             return _referenceUpdates.RefreshAssemblyReferences(doc, assemblyName);
@@ -138,7 +236,11 @@ public sealed class AssemblyLinkEventService : IDisposable
         RhinoApp.Idle += OnIdle;
         // Rhino may load the plugin on demand after a model is already open.
         foreach (var doc in RhinoDoc.OpenDocuments())
-            Enqueue(doc.RuntimeSerialNumber, new PendingUpdateFact());
+        {
+            _linkSafety?.ObserveDocument(doc);
+            if (_linkSafety?.IsEnabled != false)
+                Enqueue(doc.RuntimeSerialNumber, new PendingUpdateFact());
+        }
     }
 
     public void Stop()
@@ -192,7 +294,7 @@ public sealed class AssemblyLinkEventService : IDisposable
                 continue;
 
             var groupedObjects = group.ToList();
-            var originalGeometryByObjectId = CaptureGeometrySnapshots(groupedObjects);
+            var originalGeometryByObjectId = CaptureTransformGeometrySnapshots(groupedObjects, e.Transform);
             var geometryChangedIds = groupedObjects
                 .Where(HasSelectedSubObjects)
                 .Select(obj => obj.Id)
@@ -300,6 +402,19 @@ public sealed class AssemblyLinkEventService : IDisposable
             .ToImmutableDictionary(
                 group => group.Key,
                 group => ScaleGeometrySnapshot.Capture(group.Last().Geometry, group.Last().Attributes));
+    }
+
+    private static ImmutableDictionary<Guid, ScaleGeometrySnapshot> CaptureTransformGeometrySnapshots(
+        IEnumerable<RhinoObject> objects, Transform transform)
+    {
+        // Rigid whole-object placement only needs the matrix. Any replacement is still
+        // independently verified with full old/new geometry captured by OnReplace, so a
+        // misleading rigid Gumball notification cannot hide a shape edit. Keep pre-edit
+        // evidence for actual subobjects and non-rigid transforms, whose promotion paths
+        // need it. This avoids an unused mass-properties pass on every moved solid.
+        return CaptureGeometrySnapshots(transform.RigidType == TransformRigidType.Rigid
+            ? objects.Where(HasSelectedSubObjects)
+            : objects);
     }
 
     private void OnDeleteRhinoObject(object? sender, RhinoObjectEventArgs e)
@@ -422,7 +537,7 @@ public sealed class AssemblyLinkEventService : IDisposable
     {
         var documentSerialNumber = e.DocumentSerialNumber;
         var doc = e.Document ?? RhinoDoc.FromRuntimeSerialNumber(documentSerialNumber);
-        if (documentSerialNumber == 0 || AssemblyLinkMutationGate.IsSuppressed ||
+        if (documentSerialNumber == 0 || !ShouldCapture() ||
             (doc is not null && UndoOrRedoIsActive(doc)))
         {
             return;
@@ -494,6 +609,8 @@ public sealed class AssemblyLinkEventService : IDisposable
 
     private void OnCloseDocument(object? sender, DocumentEventArgs e)
     {
+        if (e.Document is { } doc)
+            _linkSafety?.ForgetDocument(doc);
         var serialNumber = e.Document?.RuntimeSerialNumber ?? e.DocumentSerialNumber;
         _queues.TryRemove(serialNumber, out _);
         _activeCommandBatches.TryRemove(serialNumber, out _);
@@ -504,11 +621,16 @@ public sealed class AssemblyLinkEventService : IDisposable
 
     private void OnEndOpenDocument(object? sender, DocumentOpenEventArgs e)
     {
-        Enqueue(e.DocumentSerialNumber, new PendingUpdateFact());
+        if (RhinoDoc.FromRuntimeSerialNumber(e.DocumentSerialNumber) is { } doc)
+            _linkSafety?.ObserveDocument(doc);
+        if (_linkSafety?.IsEnabled != false)
+            Enqueue(e.DocumentSerialNumber, new PendingUpdateFact());
     }
 
     private void OnBeginCommand(object? sender, CommandEventArgs e)
     {
+        if (_linkSafety?.IsEnabled == false)
+            return;
         var serialNumber = e.DocumentRuntimeSerialNumber;
         if (serialNumber != 0)
             _activeCommandBatches.GetOrAdd(serialNumber, _ => new ConcurrentStack<Guid>()).Push(Guid.NewGuid());
@@ -527,6 +649,8 @@ public sealed class AssemblyLinkEventService : IDisposable
 
     private void OnUndoRedo(object? sender, UndoRedoEventArgs e)
     {
+        if (_linkSafety?.IsEnabled == false)
+            return;
         if (e.IsBeginUndo || e.IsBeginRedo)
         {
             var affectedDocuments = RhinoDoc.OpenDocuments(true)
@@ -564,7 +688,7 @@ public sealed class AssemblyLinkEventService : IDisposable
 
     private void OnIdle(object? sender, EventArgs e)
     {
-        if (!IsStarted || AssemblyLinkMutationGate.IsSuppressed || Interlocked.Exchange(ref _processingIdle, 1) != 0)
+        if (!IsStarted || !ShouldCapture() || Interlocked.Exchange(ref _processingIdle, 1) != 0)
             return;
 
         try
@@ -609,7 +733,17 @@ public sealed class AssemblyLinkEventService : IDisposable
         bool prepareForManualUpdate = false)
     {
         facts = ResolveUnavailableReplacementIds(doc, facts);
-        var store = _repository.Load(doc);
+        var fullStore = _repository.Load(doc);
+        // Suspended assemblies with untracked changes must not have their stale matrices
+        // advanced or their geometry refreshed. Keep the complete persisted store intact;
+        // this working view shares only the safe assembly records with it.
+        var store = _linkSafety is null ? fullStore : new AssemblyStore
+        {
+            SchemaVersion = fullStore.SchemaVersion,
+            Assemblies = fullStore.Assemblies.Where(assembly => !_linkSafety.IsAssemblyBlocked(doc, assembly.Id)).ToList(),
+            MaterialLibraryCache = fullStore.MaterialLibraryCache,
+            ActionHistory = fullStore.ActionHistory
+        };
         if (facts.Count > 0 && facts.All(fact => fact is ReconcileFact))
         {
             foreach (var fact in facts.OfType<ReconcileFact>())
@@ -844,14 +978,20 @@ public sealed class AssemblyLinkEventService : IDisposable
             originalAssemblyEditRequests);
 
         var reconciliationOnly = facts.Count > 0 && facts.All(fact => fact is ReconcileFact);
+        // An accepted structural edit requires the explicit Update Assembly action even
+        // when automatic geometry updates are enabled. Keep tracking facts while staged.
+        var stagedAssemblyIds = store.Assemblies.Where(assembly => assembly.PendingComponentUpdates.Count > 0)
+            .Select(assembly => assembly.Id).ToHashSet();
         var dispatchOriginals = propagateChanges && !reconciliationOnly
             ? originalAssemblyEditRequests.Keys
-                .Where(key => !selectedAssemblyId.HasValue || key.AssemblyId == selectedAssemblyId.Value)
+                .Where(key => !stagedAssemblyIds.Contains(key.AssemblyId) &&
+                    (!selectedAssemblyId.HasValue || key.AssemblyId == selectedAssemblyId.Value))
                 .ToHashSet()
             : new HashSet<GraphItemKey>();
         var dispatchSources = propagateChanges && !reconciliationOnly
             ? store.Assemblies
-                .Where(assembly => !selectedAssemblyId.HasValue || assembly.Id == selectedAssemblyId.Value)
+                .Where(assembly => !stagedAssemblyIds.Contains(assembly.Id) &&
+                    (!selectedAssemblyId.HasValue || assembly.Id == selectedAssemblyId.Value))
                 .SelectMany(assembly => assembly.LinkGraph.Nodes)
                 .Where(node => string.Equals(node.Role, AssemblyLinkRoles.Source, StringComparison.OrdinalIgnoreCase)
                     && refreshRequests.Contains(node.ObjectId))
@@ -885,17 +1025,29 @@ public sealed class AssemblyLinkEventService : IDisposable
                 SynchronizeTransformMetadata(
                     doc,
                     store,
-                    facts.OfType<TransformFact>(),
-                    globalScaleValues.Count > 0 || facts.OfType<ReplaceFact>().Any());
-                _repository.Save(doc, store);
+                    facts.OfType<TransformFact>()
+                        .Where(fact => !fact.ObjectsWillBeCopied)
+                        .SelectMany(fact => fact.ObjectIds)
+                        .Concat(facts.OfType<ReplaceFact>().SelectMany(fact => new[] { fact.OldObjectId, fact.NewObjectId }))
+                        .Select(id => ResolveReplacementId(id, replacementMap))
+                        .ToHashSet(),
+                    globalScaleValues.Count > 0);
+                _repository.Save(doc, fullStore);
             }
 
             DispatchOriginalAssemblyEditRequests(doc, dispatchOriginals, refreshDescendants: !prepareForManualUpdate);
             if (!prepareForManualUpdate)
                 DispatchRefreshRequests(doc, dispatchSources);
 
-            var finalStore = _repository.Load(doc);
-            if (finalStore.Assemblies.SelectMany(assembly => assembly.LinkGraph.Nodes).Any(node =>
+            // Placement-only batches do not dispatch geometry work. Keep the already
+            // normalized store instead of deserializing the entire assembly graph again.
+            var finalStore = dispatchOriginals.Count > 0 || (!prepareForManualUpdate && dispatchSources.Count > 0)
+                ? _repository.Load(doc)
+                : store;
+            var activeFinalAssemblies = finalStore.Assemblies
+                .Where(assembly => _linkSafety?.IsAssemblyBlocked(doc, assembly.Id) != true).ToList();
+            if (activeFinalAssemblies.Where(assembly => assembly.PendingComponentUpdates.Count == 0)
+                .SelectMany(assembly => assembly.LinkGraph.Nodes).Any(node =>
                     HasPendingUpdate(node, PendingSourceUpdateKey) || HasPendingUpdate(node, PendingOriginalUpdateKey)))
             {
                 _deferredDocuments[doc.RuntimeSerialNumber] = true;
@@ -904,7 +1056,7 @@ public sealed class AssemblyLinkEventService : IDisposable
             {
                 _deferredDocuments.TryRemove(doc.RuntimeSerialNumber, out _);
             }
-            var newConflictCount = CountOpenConflicts(finalStore) - openConflictsBefore;
+            var newConflictCount = CountOpenConflicts(new AssemblyStore { Assemblies = activeFinalAssemblies }) - openConflictsBefore;
             if (newConflictCount > 0)
             {
                 RhinoApp.WriteLine(
@@ -922,14 +1074,10 @@ public sealed class AssemblyLinkEventService : IDisposable
     private void SynchronizeTransformMetadata(
         RhinoDoc doc,
         AssemblyStore store,
-        IEnumerable<TransformFact> transformFacts,
+        ISet<Guid> changedObjectIds,
         bool synchronizeAll)
     {
-        var transformedObjectIds = transformFacts
-            .Where(fact => !fact.ObjectsWillBeCopied)
-            .SelectMany(fact => fact.ObjectIds)
-            .ToHashSet();
-        if (!synchronizeAll && transformedObjectIds.Count == 0)
+        if (!synchronizeAll && changedObjectIds.Count == 0)
             return;
 
         foreach (var assembly in store.Assemblies)
@@ -942,6 +1090,13 @@ public sealed class AssemblyLinkEventService : IDisposable
                 {
                     continue;
                 }
+
+                // Moving one copied component changes only edges incident to its members
+                // (including edges to flat children). Do not rewrite every unrelated
+                // object's attributes and grow the undo record for an otherwise small move.
+                if (!synchronizeAll && !changedObjectIds.Contains(parent.ObjectId) &&
+                    !changedObjectIds.Contains(child.ObjectId))
+                    continue;
 
                 _lineage.ApplyObjectMetadata(doc, assembly, child, edge, parent.ObjectId);
             }
@@ -3098,14 +3253,14 @@ public sealed class AssemblyLinkEventService : IDisposable
         return facts;
     }
 
-    private static bool ShouldCapture()
+    private bool ShouldCapture()
     {
-        return !AssemblyLinkMutationGate.IsSuppressed;
+        return _linkSafety?.IsEnabled != false && !AssemblyLinkMutationGate.IsSuppressed;
     }
 
-    private static bool ShouldCapture(RhinoDoc? doc)
+    private bool ShouldCapture(RhinoDoc? doc)
     {
-        return doc is not null && !AssemblyLinkMutationGate.IsSuppressed && !UndoOrRedoIsActive(doc);
+        return doc is not null && ShouldCapture() && !UndoOrRedoIsActive(doc);
     }
 
     private static bool UndoOrRedoIsActive(RhinoDoc doc)
@@ -3127,11 +3282,13 @@ public sealed class AssemblyLinkEventService : IDisposable
         ImmutableArray<double> EdgeLengths,
         double Area,
         double Volume,
-        string? MaterialSignature = null)
+        string? MaterialSignature = null,
+        Guid InstanceDefinitionId = default,
+        Transform? InstanceTransform = null)
     {
         public bool HasGeometryEvidence =>
             !string.IsNullOrWhiteSpace(GeometryKind) &&
-            (Vertices.Length > 0 || EdgeSamples.Length > 0 || Bounds.IsValid);
+            (Vertices.Length > 0 || EdgeSamples.Length > 0 || Bounds.IsValid || InstanceTransform.HasValue);
 
         public static ScaleGeometrySnapshot EmptyEvidence()
         {
@@ -3142,6 +3299,16 @@ public sealed class AssemblyLinkEventService : IDisposable
         {
             if (geometry is null)
                 return Empty();
+
+            if (geometry is InstanceReferenceGeometry instance)
+            {
+                return new ScaleGeometrySnapshot(
+                    nameof(InstanceReferenceGeometry), geometry.GetBoundingBox(true), 0,
+                    ImmutableArray<Point3d>.Empty, ImmutableArray<Point3d>.Empty,
+                    ImmutableArray<double>.Empty, double.NaN, double.NaN,
+                    attributes is null ? null : CaptureMaterialSignature(attributes),
+                    instance.ParentIdefId, instance.Xform);
+            }
 
             var brep = geometry switch
             {
@@ -3190,12 +3357,36 @@ public sealed class AssemblyLinkEventService : IDisposable
             {
                 Bounds = transformedBounds,
                 Vertices = transformedVertices,
-                EdgeSamples = transformedEdgeSamples
+                EdgeSamples = transformedEdgeSamples,
+                InstanceTransform = InstanceTransform.HasValue ? transform * InstanceTransform.Value : null
             };
         }
 
         public bool MatchesTransformed(ScaleGeometrySnapshot revised, Transform transform)
         {
+            // Rhino moves block instances by replacing their instance-reference geometry,
+            // just as it does BREPs. Definition identity and the complete instance matrix
+            // prove that replacement is a placement edit; bounding boxes cannot prove it
+            // for rotated or symmetric hardware. Never accept a swapped block definition.
+            if (InstanceTransform.HasValue || revised.InstanceTransform.HasValue)
+            {
+                if (InstanceDefinitionId == Guid.Empty || InstanceDefinitionId != revised.InstanceDefinitionId ||
+                    !InstanceTransform.HasValue || !revised.InstanceTransform.HasValue || !IsAffine(transform))
+                    return false;
+                var expected = transform * InstanceTransform.Value;
+                var actual = revised.InstanceTransform.Value;
+                for (var row = 0; row < 4; row++)
+                {
+                    for (var column = 0; column < 4; column++)
+                    {
+                        var tolerance = Math.Max(1e-10, Math.Abs(expected[row, column]) * 1e-9);
+                        if (!NearlyEqual(expected[row, column], actual[row, column], tolerance))
+                            return false;
+                    }
+                }
+                return true;
+            }
+
             if (!string.Equals(GeometryKind, "Brep", StringComparison.Ordinal) ||
                 !string.Equals(GeometryKind, revised.GeometryKind, StringComparison.Ordinal) ||
                 FaceCount != revised.FaceCount ||

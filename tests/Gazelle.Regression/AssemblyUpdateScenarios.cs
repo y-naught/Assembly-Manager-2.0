@@ -36,10 +36,10 @@ internal static partial class Program
         if (scenario == "update-settings-compatibility")
         {
             var legacy = JsonSerializer.Deserialize<PluginSettingsRecord>("{\"SchemaVersion\":8,\"AssemblyManager\":{}}")!;
-            Require(legacy.AssemblyManager.AutomaticallyPropagateChangesInAssembly, "Existing settings without the toggle must retain automatic updates.");
+            Require(!legacy.AssemblyManager.AutomaticallyPropagateChangesInAssembly, "Settings without an explicit propagation preference must use the new manual-update default.");
             var current = new PluginSettingsRecord();
-            Require(current.SchemaVersion >= 9 && current.AssemblyManager.AutomaticallyPropagateChangesInAssembly,
-                "New settings must default to automatic propagation with the new schema.");
+            Require(current.SchemaVersion >= 10 && !current.AssemblyManager.AutomaticallyPropagateChangesInAssembly,
+                "New settings must default to manual propagation with the new schema.");
             current.AssemblyManager.AutomaticallyPropagateChangesInAssembly = false;
             Require(!JsonSerializer.Deserialize<PluginSettingsRecord>(JsonSerializer.Serialize(current))!.AssemblyManager.AutomaticallyPropagateChangesInAssembly,
                 "An explicitly disabled toggle must survive serialization.");

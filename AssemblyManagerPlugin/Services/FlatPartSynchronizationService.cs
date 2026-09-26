@@ -133,8 +133,7 @@ public sealed class FlatPartSynchronizationService
             }
             using var ownedFlatGeometry = geometry;
 
-            var color = _layers.FindPartLayerColor(doc, assembly.Name, part.Name) ??
-                        LayerService.PartColorForName(part.Name, settings.AssemblyManager.ColorizeParts);
+            var color = _layers.GetOrAssignPartColor(doc, assembly, part, settings.AssemblyManager.ColorizeParts);
             var partPath = LayerService.PartsPart(assembly.Name, part.Name);
             _layers.EnsurePartLayerIndex(doc, partPath, color);
             using var attributes = currentObject?.Attributes.Duplicate() ?? source.Attributes.Duplicate();

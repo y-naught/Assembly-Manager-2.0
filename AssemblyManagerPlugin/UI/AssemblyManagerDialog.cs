@@ -70,6 +70,13 @@ public sealed class AssemblyManagerDialog : Dialog<bool>
         var copyOrientButton = new Button { Text = "Copy / Orient Components", Width = 190 };
         copyOrientButton.Click += (_, _) => CopyOrientComponents();
 
+        var placeComponentButton = new Button
+        {
+            Text = "Place Component", Width = 155,
+            ToolTip = "Place another independently tracked drawing view of the selected component, without increasing assembly quantities."
+        };
+        placeComponentButton.Click += (_, _) => PlaceComponent();
+
         var refreshRefsButton = new Button
         {
             Text = "Update Assembly",
@@ -78,14 +85,27 @@ public sealed class AssemblyManagerDialog : Dialog<bool>
         };
         refreshRefsButton.Click += (_, _) => UpdateAssembly();
 
+        var updateComponentButton = new Button
+        {
+            Text = "Update Component",
+            Width = 155,
+            ToolTip = "Register additions to one regrouped occurrence of the selected component. Update Assembly applies them and assigns its component category; other occurrences remain unchanged."
+        };
+        updateComponentButton.Click += (_, _) => UpdateComponent();
+
         var materialLibraryButton = new Button { Text = "Material Library", Width = 155 };
         materialLibraryButton.Click += (_, _) => ShowMaterialLibrary();
 
         var estimateMaterialsButton = new Button { Text = "Estimate Materials", Width = 155 };
         estimateMaterialsButton.Click += (_, _) => EstimateMaterials();
 
-        var placeEstimateButton = new Button { Text = "Place Estimate", Width = 155 };
-        placeEstimateButton.Click += (_, _) => PlaceMaterialEstimate();
+        var placeEstimateButton = new Button
+        {
+            Text = "Place BOM",
+            Width = 155,
+            ToolTip = "Choose BOM columns and fit the material/hardware table inside a two-corner rectangle on the layout sheet."
+        };
+        placeEstimateButton.Click += (_, _) => PlaceBom();
 
         var exportEstimateButton = new Button { Text = "Export Estimate", Width = 155 };
         exportEstimateButton.Click += (_, _) => ExportMaterialEstimate();
@@ -142,7 +162,8 @@ public sealed class AssemblyManagerDialog : Dialog<bool>
         workflowLayout.AddRow(layFlatButton, estimateMaterialsButton, placeEstimateButton);
         workflowLayout.AddRow(exportEstimateButton, generateBomButton);
         workflowLayout.AddRow(new Label { Text = "Documentation" });
-        workflowLayout.AddRow(copyOrientButton, refreshRefsButton);
+        workflowLayout.AddRow(copyOrientButton, placeComponentButton);
+        workflowLayout.AddRow(updateComponentButton, refreshRefsButton);
         workflowLayout.AddRow(new Label { Text = "Library and Setup" });
         workflowLayout.AddRow(materialLibraryButton, settingsButton);
 
@@ -264,6 +285,8 @@ public sealed class AssemblyManagerDialog : Dialog<bool>
         _assemblySummary.Text =
             $"{assembly.Parts.Count} part(s), {assembly.Components.Count} component type(s), " +
             $"{assembly.Hardware.Count} hardware item(s), {linkedOutputCount} linked output(s)";
+        if (assembly.PendingComponentUpdates.Count > 0)
+            _assemblySummary.Text += $"; {assembly.PendingComponentUpdates.Count} component update(s) pending";
         _assemblySummary.ToolTip = _assemblySummary.Text;
     }
 
@@ -319,6 +342,8 @@ public sealed class AssemblyManagerDialog : Dialog<bool>
             : conflicts.Count == 0
                 ? "No open link issues for this assembly."
                 : string.Join("\n\n", conflicts.Select((conflict, index) => DescribeConflict(assembly, conflict, index + 1)));
+        if (assembly?.PendingComponentUpdates.Count > 0)
+            _linkIssueDetails.Text = $"{assembly.PendingComponentUpdates.Count} component occurrence update(s) staged. Click Update Assembly to apply additions only to the selected occurrences and update their component categories. Automatic updates for this assembly are held until then.\n\n" + _linkIssueDetails.Text;
 
         var undoIssues = _services.LinkEvents.GetUndoHealthIssues(_doc);
         _lastUndoHealthSignature = string.Join("\n", undoIssues);
@@ -572,6 +597,72 @@ public sealed class AssemblyManagerDialog : Dialog<bool>
         }
     }
 
+    private void UpdateComponent()
+    {
+        var assembly = SelectedAssembly();
+        var component = SelectedComponent(assembly);
+        if (assembly is null || component is null)
+        {
+            MessageBox.Show(this, "Select an assembly and component type first.", MessageBoxType.Information);
+            return;
+        }
+        Visible = false;
+        try
+        {
+            var groupId = CommandPickers.PickRegroupedComponent(_doc);
+            if (groupId.HasValue)
+                _services.LinkEvents.StageComponentUpdate(_doc, assembly.Name, component.Id, groupId.Value);
+        }
+        catch (Exception ex)
+        {
+            RhinoApp.WriteLine("Update component failed: {0}", ex.Message);
+            MessageBox.Show(this, ex.Message, MessageBoxType.Error);
+        }
+        finally
+        {
+            Visible = true;
+            RefreshAssemblies();
+        }
+    }
+
+    private void PlaceComponent()
+    {
+        var assembly = SelectedAssembly();
+        var component = SelectedComponent(assembly);
+        if (assembly is null || component is null)
+        {
+            MessageBox.Show(this, "Select an assembly and component type first.", MessageBoxType.Information);
+            return;
+        }
+        if (_doc.ActiveSpace == ActiveSpace.PageSpace)
+        {
+            MessageBox.Show(this, "Place component drawing geometry in model space, then display it through a layout detail.", MessageBoxType.Information);
+            return;
+        }
+        Visible = false;
+        try
+        {
+            _services.LinkSafety.EnsureCanUpdate(_doc, assembly.Id);
+            using var getter = new GetPoint();
+            getter.SetCommandPrompt($"Location for {component.Name} drawing view (component center)");
+            getter.Get();
+            if (getter.CommandResult() != Rhino.Commands.Result.Success)
+                return;
+            var count = _services.ComponentDrawing().PlaceComponent(_doc, assembly.Name, component.Id, getter.Point());
+            RhinoApp.WriteLine("Placed a tracked {0} drawing view with {1} objects; assembly quantities are unchanged.", component.Name, count);
+        }
+        catch (Exception ex)
+        {
+            RhinoApp.WriteLine("PlaceComponent failed: {0}", ex.Message);
+            MessageBox.Show(this, ex.Message, MessageBoxType.Error);
+        }
+        finally
+        {
+            Visible = true;
+            RefreshAssemblies();
+        }
+    }
+
     private void UpdateAssembly()
     {
         var assembly = SelectedAssembly();
@@ -619,7 +710,7 @@ public sealed class AssemblyManagerDialog : Dialog<bool>
         }
     }
 
-    private void PlaceMaterialEstimate()
+    private void PlaceBom()
     {
         var assembly = SelectedAssembly();
         if (assembly is null)
@@ -627,21 +718,14 @@ public sealed class AssemblyManagerDialog : Dialog<bool>
 
         if (_doc.ActiveSpace != ActiveSpace.PageSpace)
         {
-            MessageBox.Show(this, "Material estimate tables must be placed from layout/page space.", MessageBoxType.Warning);
+            MessageBox.Show(this, "Move to a layout sheet and exit any active detail before using Place BOM.", MessageBoxType.Warning);
             return;
         }
 
         Visible = false;
         try
         {
-            var pointGetter = new GetPoint();
-            pointGetter.SetCommandPrompt("Material estimate table insertion point");
-            pointGetter.Get();
-            if (pointGetter.CommandResult() != Rhino.Commands.Result.Success)
-                return;
-
-            var count = _services.NestingEstimate().PlaceMaterialEstimateTable(_doc, assembly.Name, pointGetter.Point());
-            RhinoApp.WriteLine("Placed material estimate table with {0} object(s).", count);
+            PlaceBomCommand.RunPlacement(_doc, _services, assembly.Name);
         }
         catch (Exception ex)
         {

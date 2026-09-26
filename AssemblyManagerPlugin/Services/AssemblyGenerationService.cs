@@ -24,6 +24,7 @@ public sealed class AssemblyGenerationService
     private readonly PluginSettingsService _settings;
     private readonly IActionHistorySink _history;
     private readonly AssemblyLineageService _lineage;
+    private readonly LinkedAssemblySafetyService? _linkSafety;
 
     public AssemblyGenerationService(
         AssemblyRepository repository,
@@ -31,7 +32,8 @@ public sealed class AssemblyGenerationService
         GeometryFingerprintService fingerprints,
         PluginSettingsService settings,
         IActionHistorySink history,
-        AssemblyLineageService lineage)
+        AssemblyLineageService lineage,
+        LinkedAssemblySafetyService? linkSafety = null)
     {
         _repository = repository;
         _layers = layers;
@@ -39,6 +41,7 @@ public sealed class AssemblyGenerationService
         _settings = settings;
         _history = history;
         _lineage = lineage;
+        _linkSafety = linkSafety;
     }
 
     public CreateAssemblyResult CreateAssembly(RhinoDoc doc, IEnumerable<Guid> sourceObjectIds, CreateAssemblyOptions options)
@@ -119,13 +122,15 @@ public sealed class AssemblyGenerationService
         {
             var canonicalCandidate = category.First();
             var partName = $"{options.PartPrefix}{partIndex + 1:00}";
-            var color = PartColorForIndex(partIndex, assemblySettings.ColorizeParts);
+            var color = LayerService.ChoosePartColor(partIndex + 1, assemblySettings.ColorizeParts,
+                assembly.Parts.Where(part => part.LayerColorArgb.HasValue).Select(part => Color.FromArgb(part.LayerColorArgb!.Value)));
             var partLayer = LayerService.OriginalPart(options.AssemblyName, "unsorted", partName);
             var layerIndex = _layers.EnsureLayerIndex(doc, partLayer, color);
 
             var partRecord = new PartRecord
             {
                 Name = partName,
+                LayerColorArgb = color.ToArgb(),
                 GeometryFingerprint = canonicalCandidate.Fingerprint,
                 Quantity = category.Count(),
                 MaterialThickness = canonicalCandidate.Geometry is Brep canonicalBrep
@@ -215,6 +220,7 @@ public sealed class AssemblyGenerationService
         progress.Update(8, "Saving assembly data");
         store.Assemblies.Add(assembly);
         _repository.Save(doc, store);
+        _linkSafety?.RegisterCreatedAssembly(doc, assembly.Id);
         var historyEntry = new ActionHistoryEntry
         {
             CommandName = "CreateAssembly",
@@ -296,7 +302,7 @@ public sealed class AssemblyGenerationService
             {
                 component.Parts.Add(candidate);
                 component.GeneratedObjectIds.Add(candidate.GeneratedObjectId);
-                var partColor = PartColorForName(candidate.PartName, colorizeParts);
+                var partColor = Color.FromArgb(assembly.Parts.Single(part => part.Name == candidate.PartName).LayerColorArgb!.Value);
                 _layers.MoveObjectToLayer(
                     doc,
                     candidate.GeneratedObjectId,
@@ -331,7 +337,6 @@ public sealed class AssemblyGenerationService
                     SourceToTargetTransform = TransformRecord.FromTransform(assemblyTranslation)
                 };
                 assembly.GeometryReferences.Add(reference);
-                var hardwareSourceObject = doc.Objects.FindId(hardware.SourceObjectId);
                 _lineage.RegisterDerived(
                     doc,
                     assembly,
@@ -340,9 +345,7 @@ public sealed class AssemblyGenerationService
                     generatedId,
                     AssemblyLinkRoles.Hardware,
                     assemblyTranslation,
-                    hardwareSourceObject is InstanceObject
-                        ? AssemblyLinkRecipes.BlockDefinitionPart
-                        : AssemblyLinkRecipes.DirectCopy,
+                    AssemblyLinkRecipes.HardwareCopy,
                     edgeId: reference.Id);
             }
 
@@ -441,7 +444,7 @@ public sealed class AssemblyGenerationService
                     if (!componentRecord.PartNames.Contains(part.PartName, StringComparer.OrdinalIgnoreCase))
                         componentRecord.PartNames.Add(part.PartName);
 
-                    var color = PartColorForName(part.PartName, colorizeParts);
+                    var color = Color.FromArgb(assembly.Parts.Single(record => record.Name == part.PartName).LayerColorArgb!.Value);
                     _layers.MoveObjectToLayer(
                         doc,
                         part.GeneratedObjectId,
@@ -939,17 +942,6 @@ public sealed class AssemblyGenerationService
         return value.ToString("0.########", System.Globalization.CultureInfo.InvariantCulture);
     }
 
-    private static Color PartColorForIndex(int index, bool colorizeParts)
-    {
-        return colorizeParts
-            ? LayerService.DefaultPartColors[Math.Max(0, index) % LayerService.DefaultPartColors.Length]
-            : Color.Black;
-    }
-
-    private static Color PartColorForName(string partName, bool colorizeParts)
-    {
-        return LayerService.PartColorForName(partName, colorizeParts);
-    }
 
     private sealed class PartCategorizationDebugReport
     {

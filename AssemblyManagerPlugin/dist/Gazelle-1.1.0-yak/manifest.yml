@@ -1,0 +1,19 @@
+---
+name: Gazelle
+version: 1.1.0
+authors:
+- Greg King
+description: >
+  Assembly, part, and fabrication documentation tools for Rhino 8, including
+  linked assembly updates, independently tracked component views, and fitted
+  material/hardware BOM tables. Keep the current Gazelle plugin running on every
+  machine editing managed files. Automatic propagation defaults off; use Update
+  Assembly to apply pending changes.
+url: https://github.com/y-naught/Assembly-Manager-2.0
+keywords:
+- Technical-documentation
+- manufacturing
+- BOM
+- Layouts
+- assemblies
+icon: icon.png

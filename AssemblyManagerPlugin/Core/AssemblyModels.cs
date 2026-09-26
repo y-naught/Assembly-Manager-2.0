@@ -34,6 +34,7 @@ public sealed class AssemblyRecord
     public List<HardwareRecord> Hardware { get; set; } = new();
     public List<GeometryReferenceRecord> GeometryReferences { get; set; } = new();
     public AssemblyLinkGraphRecord LinkGraph { get; set; } = new();
+    public List<PendingComponentUpdateRecord> PendingComponentUpdates { get; set; } = new();
     public List<NestingEstimateRecord> NestingEstimates { get; set; } = new();
     public MaterialEstimateReportRecord? LastMaterialEstimate { get; set; }
     public BomRecord? LastBillOfMaterials { get; set; }
@@ -60,6 +61,8 @@ public sealed class PartRecord
     public string Description { get; set; } = string.Empty;
     public string GeometryFingerprint { get; set; } = string.Empty;
     public int Quantity { get; set; }
+    /// <summary>Assigned category color, retained when output layers are regenerated.</summary>
+    public int? LayerColorArgb { get; set; }
     public double MaterialThickness { get; set; }
     /// <summary>
     /// Parent material identity used when deciding whether live source occurrences belong to
@@ -318,6 +321,26 @@ public sealed class SourceComponentInstanceRecord
     public string Status { get; set; } = AssemblyLinkStatuses.Active;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
     public Dictionary<string, string> Metadata { get; set; } = new();
+}
+
+/// <summary>
+/// An explicitly accepted additive component regroup, awaiting the operator's Update Assembly.
+/// Stores identities, not geometry: all members and placements are revalidated before applying.
+/// </summary>
+public sealed class PendingComponentUpdateRecord
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid ComponentId { get; set; }
+    /// <summary>The selected regrouped occurrence; the only occurrence this plan may modify.</summary>
+    public Guid TemplateInstanceId { get; set; }
+    public Guid RegroupedGroupId { get; set; }
+    public Guid PreviousGeneratedGroupId { get; set; }
+    public List<Guid> AddedObjectIds { get; set; } = new();
+    // Retained for saved-model compatibility. New plans contain only TemplateInstanceId;
+    // older cohort lists do not authorize edits to the other occurrences.
+    public List<Guid> InstanceIds { get; set; } = new();
+    public Dictionary<Guid, List<Guid>> MemberNodeIdsByInstance { get; set; } = new();
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
 public sealed class NestingEstimateRecord

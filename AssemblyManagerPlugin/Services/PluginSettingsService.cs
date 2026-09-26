@@ -6,7 +6,7 @@ namespace AssemblyManagerPlugin.Services;
 
 public sealed class PluginSettingsService
 {
-    private const int CurrentSchemaVersion = 9;
+    private const int CurrentSchemaVersion = 10;
     private const double DefaultLengthTolerance = 0.001;
     private static readonly double[] PreviousDefaultLengthTolerances = { 0.01, 0.005 };
     private const double DefaultAreaTolerance = 0.01;
@@ -19,6 +19,12 @@ public sealed class PluginSettingsService
         PropertyNameCaseInsensitive = true
     };
     private bool? _automaticPropagationEnabled;
+    private bool? _linkedAssembliesEnabled;
+
+    public event EventHandler? LinkingPreferenceChanged;
+
+    public bool EnableLinkedAssemblies =>
+        _linkedAssembliesEnabled ??= Load().AssemblyManager.EnableLinkedAssemblies;
 
     // Rhino can raise Idle frequently. Do not deserialize the complete material library and
     // settings record on every idle tick merely to read this one preference.
@@ -45,12 +51,36 @@ public sealed class PluginSettingsService
 
     public void Save(PluginSettingsRecord record)
     {
+        var linkingWasEnabled = EnableLinkedAssemblies;
+        var automaticWasEnabled = AutomaticallyPropagateChangesInAssembly;
+        var plugin = global::AssemblyManagerPlugin.AssemblyManagerPlugin.Instance;
+        var previousJson = plugin.Settings.GetString(AssemblyManagerConstants.PluginSettingsEntry, string.Empty);
+        _linkedAssembliesEnabled = record.AssemblyManager.EnableLinkedAssemblies;
         _automaticPropagationEnabled = record.AssemblyManager.AutomaticallyPropagateChangesInAssembly;
         record.UpdatedAt = DateTimeOffset.UtcNow;
         var json = JsonSerializer.Serialize(record, JsonOptions);
-        var plugin = global::AssemblyManagerPlugin.AssemblyManagerPlugin.Instance;
-        plugin.Settings.SetString(AssemblyManagerConstants.PluginSettingsEntry, json);
-        plugin.SaveSettings();
+        var linkingChanged = linkingWasEnabled != _linkedAssembliesEnabled;
+        try
+        {
+            // Establish the durable safety baseline before committing an emergency-off
+            // preference. A failed flush/snapshot must not leave tracking off without it.
+            if (linkingChanged)
+                LinkingPreferenceChanged?.Invoke(this, EventArgs.Empty);
+            plugin.Settings.SetString(AssemblyManagerConstants.PluginSettingsEntry, json);
+            plugin.SaveSettings();
+        }
+        catch
+        {
+            _linkedAssembliesEnabled = linkingWasEnabled;
+            _automaticPropagationEnabled = automaticWasEnabled;
+            plugin.Settings.SetString(AssemblyManagerConstants.PluginSettingsEntry, previousJson);
+            if (linkingChanged)
+            {
+                try { LinkingPreferenceChanged?.Invoke(this, EventArgs.Empty); }
+                catch { /* Preserve the original failure; persisted safety records stay fail-closed. */ }
+            }
+            throw;
+        }
     }
 
     private static PluginSettingsRecord Normalize(PluginSettingsRecord record)
