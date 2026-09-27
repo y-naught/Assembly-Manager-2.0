@@ -91,7 +91,7 @@ The deferred-edit and hardware-name limitations remain open, accepted for this r
 - [Part Categorization Algorithm](Docs/PartCategorizationAlgorithm.md)
 - [Linked Assembly Architecture](Docs/LinkedAssemblyArchitecture.md)
 - [Code Audit and Verification](Docs/CodeAudit.md)
-- [Regression Runner](../tests/Gazelle.Regression/README.md)
+- [Regression Runner](https://github.com/y-naught/Assembly-Manager-2.0/blob/v1.1.1/tests/Gazelle.Regression/README.md)
 
 ## Data And Persistence
 

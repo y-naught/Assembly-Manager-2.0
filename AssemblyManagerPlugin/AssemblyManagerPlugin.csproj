@@ -19,7 +19,7 @@
   
   <PropertyGroup>
     <!-- Specifies information for Assembly and Yak -->
-    <Version>1.1.0</Version>
+    <Version>1.1.1</Version>
     <Title>Gazelle</Title>
     <Company>Greg King</Company>
     <Description>Assembly, part, fabrication documentation, and manufacturing prep tools for Rhino.</Description>

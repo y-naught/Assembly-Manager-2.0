@@ -108,6 +108,17 @@ public sealed class AssemblyLinkEventService : IDisposable
     /// <summary>Registers an explicit component regroup without propagating geometry.</summary>
     public ComponentUpdateResult StageComponentUpdate(
         RhinoDoc doc, string assemblyName, Guid componentId, Guid regroupedGroupId)
+        => StageComponentChange(doc, assemblyName, "Gazelle Update Component",
+            () => _componentUpdates!.Stage(doc, assemblyName, componentId, regroupedGroupId));
+
+    /// <summary>Adds a part to a registered input group; downstream copies wait for Update Assembly.</summary>
+    public ComponentUpdateResult StageInputComponentAddition(
+        RhinoDoc doc, string assemblyName, Guid sourceInstanceId, Guid addedObjectId)
+        => StageComponentChange(doc, assemblyName, "Gazelle Add Part To Component",
+            () => _componentUpdates!.StageInputAddition(doc, assemblyName, sourceInstanceId, addedObjectId));
+
+    private ComponentUpdateResult StageComponentChange(
+        RhinoDoc doc, string assemblyName, string undoName, Func<ComponentUpdateResult> stage)
     {
         ArgumentNullException.ThrowIfNull(doc);
         _linkSafety?.EnsureEnabled();
@@ -121,14 +132,14 @@ public sealed class AssemblyLinkEventService : IDisposable
         if (Interlocked.Exchange(ref _processingIdle, 1) != 0)
             throw new InvalidOperationException("An assembly update is already in progress.");
         var undoRecord = doc.UndoRecordingEnabled && !doc.UndoRecordingIsActive
-            ? doc.BeginUndoRecord("Gazelle Update Component") : 0u;
+            ? doc.BeginUndoRecord(undoName) : 0u;
         try
         {
             var facts = _queues.TryGetValue(doc.RuntimeSerialNumber, out var queue)
                 ? Drain(queue) : new List<LinkEventFact>();
             ProcessFacts(doc, facts, propagateChanges: false);
             using var mutation = AssemblyLinkMutationGate.Enter();
-            var result = _componentUpdates.Stage(doc, assemblyName, componentId, regroupedGroupId);
+            var result = stage();
             RhinoApp.WriteLine($"Gazelle staged {result.AddedObjectCount} added item(s) for the selected occurrence " +
                 $"of {result.ComponentName} in '{result.AssemblyName}'. Click Update Assembly to apply them and update its component category; other occurrences remain unchanged.");
             return result;
@@ -176,7 +187,7 @@ public sealed class AssemblyLinkEventService : IDisposable
             {
                 if (_componentUpdates is null)
                     throw new InvalidOperationException("Component updates are not available in this service instance.");
-                RhinoApp.WriteLine("Gazelle applying staged component additions in '{0}'...", assemblyName);
+                RhinoApp.WriteLine("Gazelle applying staged component membership changes in '{0}'...", assemblyName);
                 using var mutation = AssemblyLinkMutationGate.Enter();
                 _componentUpdates.ApplyPending(doc, pendingStore, pendingAssembly);
                 _repository.Save(doc, pendingStore);
@@ -706,6 +717,10 @@ public sealed class AssemblyLinkEventService : IDisposable
 
                 if (UndoOrRedoIsActive(doc))
                     continue;
+                // Rhino can pump idle while a command is selecting/regrouping objects.
+                // Membership inference must see the completed command, never its middle.
+                if (_activeCommandBatches.TryGetValue(entry.Key, out var batches) && !batches.IsEmpty)
+                    continue;
 
                 var facts = Drain(entry.Value);
                 if (facts.Count > 0 ||
@@ -952,13 +967,6 @@ public sealed class AssemblyLinkEventService : IDisposable
             }
         }
 
-        // Group creation and membership assignment can emit several table events in one
-        // command. Only the final immutable snapshot represents the state to reconcile.
-        foreach (var fact in facts.OfType<GroupChangedFact>()
-                     .GroupBy(GroupFactKey)
-                     .Select(group => group.Last()))
-            changed |= ApplyGroupChangedFact(store, fact);
-
         changed |= RejectStructuralGeometryBatches(
             doc,
             facts,
@@ -967,6 +975,26 @@ public sealed class AssemblyLinkEventService : IDisposable
             store,
             refreshRequests,
             originalAssemblyEditRequests);
+
+        // Native object deletion need not emit a group-table change. Include the affected
+        // input groups, but reject structural replacement evidence before membership
+        // preflight can interpret a deleted source as an ordinary omission.
+        var deletedInputGroups = CollectDeletedInputGroups(doc, store, facts,
+            replacementCompanionIndexes, replacementMap, out var deletionIssuesChanged);
+        changed |= deletionIssuesChanged;
+        // Group creation and membership assignment can emit several table events in one
+        // command. Only the final immutable snapshot represents the state to reconcile.
+        var groupFacts = facts.OfType<GroupChangedFact>()
+                     .GroupBy(GroupFactKey)
+                     .Select(group => group.Last()).ToList();
+        var changedInputGroups = groupFacts.Select(fact => fact.GroupId)
+            .Concat(deletedInputGroups).Where(id => id != Guid.Empty).ToHashSet();
+        if (changedInputGroups.Count > 0 && _componentUpdates is not null)
+            changed |= _componentUpdates.ReconcileInputGroups(doc, fullStore,
+                store.Assemblies.Select(assembly => assembly.Id).ToHashSet(), changedInputGroups);
+        foreach (var fact in groupFacts)
+            changed |= ApplyGroupChangedFact(store, fact);
+
         changed |= RejectConcurrentSourceAndOriginalEdits(
             store,
             refreshRequests,
@@ -980,7 +1008,7 @@ public sealed class AssemblyLinkEventService : IDisposable
         var reconciliationOnly = facts.Count > 0 && facts.All(fact => fact is ReconcileFact);
         // An accepted structural edit requires the explicit Update Assembly action even
         // when automatic geometry updates are enabled. Keep tracking facts while staged.
-        var stagedAssemblyIds = store.Assemblies.Where(assembly => assembly.PendingComponentUpdates.Count > 0)
+        var stagedAssemblyIds = store.Assemblies.Where(assembly => assembly.PendingComponentUpdates.Count > 0 || ComponentUpdateService.HasInputRegroupIssue(assembly))
             .Select(assembly => assembly.Id).ToHashSet();
         var dispatchOriginals = propagateChanges && !reconciliationOnly
             ? originalAssemblyEditRequests.Keys
@@ -1046,7 +1074,10 @@ public sealed class AssemblyLinkEventService : IDisposable
                 : store;
             var activeFinalAssemblies = finalStore.Assemblies
                 .Where(assembly => _linkSafety?.IsAssemblyBlocked(doc, assembly.Id) != true).ToList();
-            if (activeFinalAssemblies.Where(assembly => assembly.PendingComponentUpdates.Count == 0)
+            // An unresolved regroup cannot dispatch deferred geometry work. A later
+            // group repair event will wake processing; do not retry it on every idle.
+            if (activeFinalAssemblies.Where(assembly => assembly.PendingComponentUpdates.Count == 0 &&
+                    !ComponentUpdateService.HasInputRegroupIssue(assembly))
                 .SelectMany(assembly => assembly.LinkGraph.Nodes).Any(node =>
                     HasPendingUpdate(node, PendingSourceUpdateKey) || HasPendingUpdate(node, PendingOriginalUpdateKey)))
             {
@@ -2194,6 +2225,10 @@ public sealed class AssemblyLinkEventService : IDisposable
 
     private static bool ApplyDeleteFact(RhinoDoc doc, AssemblyStore store, DeleteFact fact)
     {
+        // A delete followed by restore/replacement in the same completed batch is not
+        // a missing source and must never authorize removal of its downstream objects.
+        if (doc.Objects.FindId(fact.ObjectId) is { IsDeleted: false })
+            return false;
         var changed = false;
         foreach (var assembly in store.Assemblies)
         {
@@ -2221,6 +2256,62 @@ public sealed class AssemblyLinkEventService : IDisposable
             changed |= ResolveDuplicateIdentityIfUnique(doc, store, linkedNodeId);
 
         return changed;
+    }
+
+    private static HashSet<Guid> CollectDeletedInputGroups(
+        RhinoDoc doc, AssemblyStore store, IReadOnlyList<LinkEventFact> facts,
+        ISet<int> replacementCompanionIndexes, IReadOnlyDictionary<Guid, Guid> replacementMap,
+        out bool changed)
+    {
+        changed = false;
+        var groups = new HashSet<Guid>();
+        var unmatchedFacts = facts.Select((fact, index) => (fact, index))
+            .Where(item => !replacementCompanionIndexes.Contains(item.index))
+            .Select(item => item.fact).ToList();
+        foreach (var deletion in unmatchedFacts.OfType<DeleteFact>())
+        {
+            var objectId = ResolveReplacementId(deletion.ObjectId, replacementMap);
+            // For commandless API edits, the coalesced batch is the only available
+            // boundary. Be conservative if it also contains structural creation/editing.
+            var relatedMutations = unmatchedFacts.Where(fact =>
+                    deletion.CommandBatchId == Guid.Empty || fact.CommandBatchId == Guid.Empty ||
+                    fact.CommandBatchId == deletion.CommandBatchId)
+                .Where(fact => fact is AddedFact or ReplaceFact or GeometryChangedFact ||
+                    fact is TransformFact transform &&
+                    (transform.ObjectsWillBeCopied || transform.Transform.RigidType != TransformRigidType.Rigid))
+                .ToList();
+            // Delete + Add may reuse the old UUID for one split remainder. A live
+            // object proves restoration only when there is no unmatched structural work.
+            if (relatedMutations.Count == 0 && doc.Objects.FindId(objectId) is { IsDeleted: false }) continue;
+            foreach (var assembly in store.Assemblies)
+            {
+                foreach (var source in assembly.LinkGraph.Nodes.Where(node =>
+                             node.ObjectId == objectId && node.Role == AssemblyLinkRoles.Source))
+                {
+                    var instances = assembly.LinkGraph.SourceComponentInstances
+                        .Where(instance => instance.SourceNodeIds.Contains(source.Id)).ToList();
+                    if (instances.Count == 0) continue;
+                    foreach (var instance in instances)
+                        if (instance.SourceGroupId != Guid.Empty) groups.Add(instance.SourceGroupId);
+
+                    if (relatedMutations.Count > 0)
+                    {
+                        source.Status = AssemblyLinkStatuses.Conflict;
+                        changed |= AddConflict(assembly, AssemblyLinkConflictTypes.SourceSplit, source.Id,
+                            "This input deletion also added or reshaped objects in the same event batch. It may be a split, join, or replacement; Gazelle preserved downstream objects for review instead of treating it as a part removal.",
+                            new[] { objectId }.Concat(relatedMutations.SelectMany(fact => fact switch
+                            {
+                                AddedFact added => new[] { added.ObjectId },
+                                ReplaceFact replaced => new[] { replaced.OldObjectId, replaced.NewObjectId },
+                                GeometryChangedFact geometry => geometry.ObjectIds.ToArray(),
+                                TransformFact transform => transform.ObjectIds.ToArray(),
+                                _ => Array.Empty<Guid>()
+                            })), $"source-deletion-structural:{source.Id}");
+                    }
+                }
+            }
+        }
+        return groups;
     }
 
     private static bool ApplyAddedFact(AssemblyStore store, AddedFact fact)
@@ -2435,6 +2526,20 @@ public sealed class AssemblyLinkEventService : IDisposable
                         .Select(node => node.ObjectId)
                         .Where(id => id != Guid.Empty)
                         .ToHashSet();
+
+                // Explicitly accepted additions are already in the edited Rhino group,
+                // but are intentionally absent from the graph until Update Assembly.
+                // Later group-name/table events must not report those approved members
+                // as new issues; unexpected additions or removals still need review.
+                foreach (var pending in assembly.PendingComponentUpdates.Where(pending =>
+                             pending.TemplateInstanceId == instance.Id && pending.RegroupedGroupId == fact.GroupId &&
+                             (isSourceGroup ? pending.AdditionOrigin == ComponentAdditionOrigins.Input
+                                 : pending.AdditionOrigin == ComponentAdditionOrigins.Original)))
+                {
+                    if (isSourceGroup)
+                        expectedMembers.ExceptWith(assembly.LinkGraph.Nodes.Where(node => pending.RemovedSourceNodeIds.Contains(node.Id)).Select(node => node.ObjectId));
+                    expectedMembers.UnionWith(pending.AddedObjectIds);
+                }
 
                 var groupIdentity = fact.GroupId != Guid.Empty ? fact.GroupId.ToString() : $"index:{fact.GroupIndex}";
                 var conflictEventKey = $"group-membership:{instance.Id}:{groupIdentity}";

@@ -304,6 +304,32 @@ internal static partial class Program
             "component-reject-omitted-member", "component-reject-linked-member",
             "component-reject-stale-group", "component-reject-stale-retained-geometry", "component-reject-reserved-addition",
             "component-reject-shared-copied-group",
+            "input-addition-part", "input-addition-existing-part", "input-addition-inherited-copy", "input-addition-block-hardware",
+            "input-addition-multi-view", "input-addition-staged-restart", "input-addition-rejections",
+            "input-addition-stale-membership", "input-addition-mixed-origin", "input-addition-unknown-origin",
+            "input-safety-undo-stage", "input-safety-undo-apply", "input-safety-legacy-direction", "input-safety-rollback-adoption",
+            "input-regroup-rename", "input-regroup-same-members", "input-regroup-addition", "input-regroup-removal",
+            "input-regroup-deleted-removal", "input-regroup-add-remove", "input-regroup-repeated",
+            "input-regroup-ambiguous", "input-regroup-mixed-occurrences", "input-regroup-shared-input",
+            "input-regroup-multi-view-flat", "input-regroup-last-category",
+            "input-regroup-remove-hardware", "input-regroup-dependent-removal", "input-regroup-removal-rollback", "input-regroup-cancel-removal",
+            "input-delete-immediate", "input-delete-idle-manual", "input-delete-auto-held", "input-delete-last-category",
+            "input-delete-moved-views", "input-delete-hardware", "input-delete-dependent", "input-delete-shared-source",
+            "input-delete-restored-before-update", "input-delete-replace-protection",
+            "input-delete-staged-restart", "input-delete-last-member-protection", "input-delete-split-protection",
+            "input-delete-split-new-ids",
+            "input-delete-copyorient-new", "input-delete-copyorient-new-hardware",
+            "input-delete-copyorient-legacy", "input-delete-copyorient-legacy-hardware",
+            "input-delete-copyorient-wrong-owner", "input-delete-copyorient-ambiguous-parent",
+            "input-delete-copyorient-legacy-unsupported-recipe", "input-delete-copyorient-legacy-wholeblock-hardware",
+            "input-delete-copyorient-legacy-chained-copy",
+            "regroup-material-source-auto", "regroup-material-source-manual",
+            "regroup-material-original-auto", "regroup-material-original-manual",
+            "regroup-material-partial-source-auto", "regroup-material-partial-source-manual",
+            "regroup-material-part-assignment-auto", "regroup-material-part-assignment-manual", "regroup-material-part-assignment-stock-auto",
+            "regroup-material-repair-cycle",
+            "material-category-persistence-live-source", "material-category-persistence-part-stock",
+            "material-category-persistence-legacy-missing", "material-category-persistence-legacy-null", "material-category-persistence-empty-standalone",
             "placement-hardware-move-refresh", "placement-hardware-definition-change", "placement-local-metadata", "placement-repository-normalization",
             "link-settings-defaults", "link-master-unchanged", "link-master-source-edit", "link-master-group-change",
             "link-master-restart", "link-master-unrelated-assembly", "link-master-created-off", "link-master-recreated",
@@ -340,6 +366,18 @@ internal static partial class Program
                     RunComponentOccurrenceScenario(core, services, scenario, fixtureDocs);
                 else if (scenario.StartsWith("component-", StringComparison.Ordinal))
                     RunComponentUpdateScenario(core, services, scenario, fixtureDocs);
+                else if (scenario.StartsWith("input-addition-", StringComparison.Ordinal))
+                    RunInputComponentAdditionScenario(core, services, scenario, fixtureDocs);
+                else if (scenario.StartsWith("input-safety-", StringComparison.Ordinal))
+                    RunInputComponentAdditionSafetyScenario(core, services, scenario, fixtureDocs);
+                else if (scenario.StartsWith("input-regroup-", StringComparison.Ordinal))
+                    RunInputRegroupScenario(core, services, scenario, fixtureDocs);
+                else if (scenario.StartsWith("input-delete-", StringComparison.Ordinal))
+                    RunInputDeletionScenario(core, services, scenario, fixtureDocs);
+                else if (scenario.StartsWith("regroup-material-", StringComparison.Ordinal))
+                    RunRegroupMaterialMergeScenario(core, services, scenario, fixtureDocs);
+                else if (scenario.StartsWith("material-category-persistence-", StringComparison.Ordinal))
+                    RunMaterialCategoryPersistenceScenario(core, services, scenario, fixtureDocs);
                 else if (scenario.StartsWith("update-", StringComparison.Ordinal))
                     RunAssemblyUpdateScenario(core, services, scenario, fixtureDocs);
                 else if (scenario.StartsWith("layer-", StringComparison.Ordinal))

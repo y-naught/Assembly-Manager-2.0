@@ -100,7 +100,12 @@ public sealed class AssemblyRepository
 
             foreach (var pending in assembly.PendingComponentUpdates)
             {
+                if (pending.AdditionOrigin is not (ComponentAdditionOrigins.Original or ComponentAdditionOrigins.Input))
+                    throw new InvalidOperationException($"Assembly '{assembly.Name}' has an unsupported pending component addition origin. Use the same or a newer Gazelle version.");
                 pending.AddedObjectIds ??= new List<Guid>();
+                pending.RemovedSourceNodeIds ??= new List<Guid>();
+                if (pending.AdditionOrigin != ComponentAdditionOrigins.Input && pending.RemovedSourceNodeIds.Count > 0)
+                    throw new InvalidOperationException($"Assembly '{assembly.Name}' contains unsupported original-side removals.");
                 pending.InstanceIds ??= new List<Guid>();
                 pending.MemberNodeIdsByInstance ??= new Dictionary<Guid, List<Guid>>();
                 if (pending.MemberNodeIdsByInstance.Values.Any(ids => ids is null))
@@ -121,7 +126,10 @@ public sealed class AssemblyRepository
                 part.SourceObjectIds ??= new List<Guid>();
                 part.GeneratedObjectIds ??= new List<Guid>();
                 part.CamObjectIds ??= new List<Guid>();
-                if (string.IsNullOrWhiteSpace(part.CategorizationMaterialId))
+                // An explicit empty value is the accepted TBD identity, not missing data.
+                // Re-reading live material here would erase a later material-only edit
+                // before reconciliation can split or merge the affected occurrences.
+                if (part.CategorizationMaterialId is null)
                 {
                     part.CategorizationMaterialId = ResolveCategorizationMaterialId(
                         store,

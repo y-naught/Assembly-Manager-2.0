@@ -44,7 +44,7 @@ public sealed class LinkedAssemblySafetyService
     public void EnsureEnabled()
     {
         if (!IsEnabled)
-            throw new InvalidOperationException("Linked assemblies are disabled in Assembly Manager Settings. Enable linked assemblies before using Update Assembly or Update Component.");
+            throw new InvalidOperationException("Linked assemblies are disabled in Assembly Manager Settings. Enable linked assemblies before using Update Assembly, Update Component, or AddPartToComponent.");
     }
 
     public void ApplyPreferenceToOpenDocuments()

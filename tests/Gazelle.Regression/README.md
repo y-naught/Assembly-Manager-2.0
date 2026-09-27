@@ -14,7 +14,7 @@ dotnet tests\Gazelle.Regression\bin\Release\net7.0-windows\Gazelle.Regression.dl
 
 The optional first argument is the absolute path to another Gazelle RHP, for example the Debug build. The test project references the existing Release RHP for compilation and does not rebuild it itself. To override the compile-time reference, pass `-p:GazellePluginPath=<absolute-path>` when building the runner. For a nonstandard Rhino installation, set `RhinoSystemPath` during build and `GAZELLE_TEST_RHINO_SYSTEM` when running.
 
-For a focused run, set `GAZELLE_TEST_FILTER` to comma-separated scenario prefixes, such as `placed-bom-,place-component-,multi-copy-`. With no filter, the runner executes 105 service/storage/geometry/font cases. The four native layout cases are opt-in: run fresh processes with `GAZELLE_TEST_FILTER=bom-table-` for the three legacy table-service cases, and `GAZELLE_TEST_FILTER=bom-fitted-page` for the new fitted placement case. Rhino page initialization can stall in a hidden host, especially after other fixtures; progress markers identify the blocking call. These cases are not part of the reliable default console-host suite.
+For a focused run, set `GAZELLE_TEST_FILTER` to comma-separated scenario prefixes, such as `input-delete-` or `regroup-material-,material-category-persistence-`. With no filter, the runner executes 173 service/storage/geometry/font cases. The four native layout cases are opt-in: run fresh processes with `GAZELLE_TEST_FILTER=bom-table-` for the three legacy table-service cases, and `GAZELLE_TEST_FILTER=bom-fitted-page` for the new fitted placement case. Rhino page initialization can stall in a hidden host, especially after other fixtures; progress markers identify the blocking call. These cases are not part of the reliable default console-host suite.
 
 To check the Debug plugin with the same compiled runner, first build that plugin configuration and then pass its path:
 
@@ -25,6 +25,36 @@ dotnet tests\Gazelle.Regression\bin\Release\net7.0-windows\Gazelle.Regression.dl
 
 Build errors are not regression passes. The current .NET 7 target can produce an SDK end-of-support warning; do not hide actual compiler/test failures in that warning. The current case list and routing are in `Program.RunScenarios`, not generated from this README.
 
+## Input-side component additions
+
+Ten `input-addition-` scenarios exercise `AddPartToComponent` through its production staging wrapper: new/matching parts, adoption of a copied object with inherited link tags, block hardware and BOM quantities, three independently positioned drawing views, repeated staging and listener restart, rejected selections, stale membership, mixed input/original plans, and unsupported stored origins. They verify that the selected input UUID, layer, material, position and unrelated user text survive; no copies appear until Update Assembly; only the selected occurrence changes; existing flat outputs synchronize; and a second update does not duplicate additions.
+
+Four `input-safety-` scenarios check native Undo of staging/application, fail-closed handling of a source plan interpreted using the legacy original-side default, and rollback after a forced failure following the first successful source adoption. Rollback verifies restored object/attribute/group/layer sets and the assembly snapshot, then retries successfully. Attribute comparisons use actual values, memberships and user strings rather than standalone 3dm archive bytes that remap group indices.
+
+Desktop Redo is **not verified**. In this hidden host, direct `RhinoDoc.Undo()` leaves native undo recording active; a plain point/document-string control fails immediate Redo even with Gazelle listeners stopped. The tests assert Undo restoration only and explicitly report this limitation. Test command selection/cancellation and desktop Undo/Redo through the Visual Studio debugger, not by registering a second copy of Gazelle beside the installed plugin.
+
+## Input-group recognition and removals
+
+Sixteen `input-regroup-` scenarios exercise native group-table edits and the production idle/event path. They cover renaming, recreating an unchanged group, adding/removing/replacing members, an already deleted input member, repeated regrouping, ambiguous groups, mixed occurrences and shared inputs, multiple moved drawing views, rotated flat representatives, retirement of the last part category, hardware removal/BOM quantities, downstream dependency protection, failed-deletion rollback, and cancellation by restoring the original membership.
+
+Assertions require recognition through retained source UUIDs, updated group identity, no downstream membership changes before Update Assembly, and changes limited to the selected occurrence. Omitted input geometry remains in the model if it still exists. Flat reparenting preserves geometry, placement and UUID; last-category retirement removes owned output and labels but retains user notes. A forced failure after the first output deletion must restore the exact output UUIDs and runtime serials, source/flat attributes, and stored assembly snapshot before a successful retry. Unsafe dependencies must be rejected before deletion. These checks do not establish general removal/relink support or failure atomicity across an entire multi-assembly refresh.
+
+The ambiguous-group case also holds a real geometry edit from an untouched sibling without continually rescheduling idle work. Deleting only the competing group must trigger recognition of the surviving group, clear the regroup issue, and allow the held edit to finish during Update Assembly.
+
+## TBD material merge regressions
+
+Ten `regroup-material-` cases add shape-identical, unassigned members through native input regrouping, apply Update Assembly, and then assign the existing category's material. They cover input/original attribute edits in automatic/manual mode, one edited member of a two-member TBD category, the real `AssignMaterialToPart` service (including a distinct stock-shape ID with the same parent), and a temporary-material/reassignment recovery cycle for duplicate categories whose old TBD baseline was already overwritten. Assertions check surviving part number/color, quantities and component membership, generated layers, copied placements, synchronized flat representatives/labels, and repeated-update stability. Part-level service tests supply an in-memory library through the settings reader and do not touch saved user settings.
+
+Five `material-category-persistence-` cases distinguish an accepted empty category from a missing/null legacy field. They check load/save and JSON round trips after source-material changes and part-level stock-record updates, one-time legacy initialization (including initialization to empty), and standalone normalization. Four direct-edit cases reproduced the merging failure against the pre-fix build before the production fix was compiled.
+
+## Direct input deletion regressions
+
+Fourteen `input-delete-` cases delete native input objects without regrouping. They exercise Update Assembly immediately before idle, deferred/manual mode, automatic mode still holding structural changes, final-category retirement with user-note preservation, independently moved copied views, hardware/BOM removal, shared-source and downstream dependency rejection, restoration before event processing, same-UUID replacement, staged listener restart/persistence, and deletion of the last identifying member. Two split-like delete/add batches cover both Rhino reusing the old source UUID for one remainder and entirely fresh successor UUIDs; neither may be accepted as ordinary removal or guessed replacement lineage.
+
+Assertions cover selected-occurrence identity, removal of all owned original/copied descendants and stale graph/reference records, retained flat UUID/placement with a surviving parent, quantities and labels, and repeat-update stability. Every retained non-row-header object keeps its UUID; normal regenerated row headers are compared by content, placement, styling and count instead of requiring their UUIDs to remain constant. Tests use disposable native geometry and service callbacks, not desktop command notification/UI certification or a full save/close/reopen workflow.
+
+Nine additional `input-delete-copyorient-` cases invoke the real Copy / Orient service after fixture normalization, without a healing Update Assembly before deletion. They check occurrence IDs in newly created part/hardware copies, independently moved views, persisted historical copies missing those IDs, and old whole-block hardware recipes. Wrong nonempty occurrence IDs, multiple incoming parents, unsupported BREP recipes, and an unowned chained copy remain rejected without deleting outputs. The earlier idealized fixtures supplied occurrence IDs themselves, and their preliminary refresh masked the producer omission; these cases cover that gap explicitly.
+
 ## Portable coverage
 
 | Case group | Count | Files |
@@ -34,15 +64,21 @@ Build errors are not regression passes. The current .NET 7 target can produce an
 | Deferred/manual updates, material changes, flats, and dependencies | 26 | `AssemblyUpdateScenarios.cs`, `FlatDependencyScenarios.cs` |
 | Command-line feedback | 5 | `UpdateFeedbackScenarios.cs` |
 | Staged selected-occurrence component additions | 20 | `ComponentUpdateScenarios.cs`, `ComponentOccurrenceScenarios.cs` |
+| Input-side additions and selection/persistence safeguards | 10 | `InputComponentAdditionScenarios.cs` |
+| Input-addition Undo, legacy direction and rollback | 4 | `InputComponentAdditionSafetyScenarios.cs` |
+| Input regrouping, safe removals, flat reparenting and rollback | 16 | `InputRegroupScenarios.cs` |
+| Direct input deletion, real Copy/Orient ownership, downstream cleanup and protection | 23 | `InputDeletionScenarios.cs` |
+| Regroup-added TBD material merges, partial cohorts and recovery | 10 | `RegroupMaterialMergeScenarios.cs` |
+| Accepted empty category persistence and legacy initialization | 5 | `MaterialCategoryPersistenceScenarios.cs` |
 | Copied hardware placement, movement performance and repository normalization | 4 | `PlacementPerformanceScenarios.cs` |
-| Native material/hardware table placement | 3 | `BomTableScenarios.cs` |
+| Native material/hardware table placement (opt-in) | 3 | `BomTableScenarios.cs` |
 | Fitted BOM columns, wrapping, paper units, bounds, validation | 6 | `PlacedBomScenarios.cs` |
 | Native fitted BOM page insertion (opt-in) | 1 | `PlacedBomScenarios.cs` |
 | Individual tracked component placement and preflight | 4 | `PlaceComponentScenarios.cs` |
 | Multiple copied views, category merge/gap and additions | 4 | `MultiCopyReconciliationScenarios.cs` |
 | Settings and master-link suspension safety | 9 | `LinkSwitchScenarios.cs` |
 | Extended color allocation and persistence | 3 | `PartColorScenarios.cs` |
-| Total (105 default + 4 opt-in layout) | 109 | |
+| Total (173 default + 4 opt-in layout) | 177 | |
 
 The cases cover source replacement, source non-rigid scaling, original-assembly edit promotion, existing categories with non-transitive geometry tolerances, missing or unsupported source evidence, managed part layer cleanup/colors, deferred/manual updates, synchronized flat outputs, command-line update feedback, staged component additions, hardware placement, master-link suspension, and table output. The tolerance fixtures explicitly establish A matches B and B matches C while A does not match C; editing a different occurrence must still produce nine unchanged P01s plus one new part, without renumbering A/B/C. Missing or unsupported evidence in an unrelated category must not block a complete category. Evidence missing inside the affected category remains a conservative review case, preserving all quantities and existing identities.
 
@@ -90,7 +126,7 @@ The separate [BOM dialog layout check](../Gazelle.DialogLayout/README.md) verifi
 - Desktop idle scheduling, plugin loading/registration, or every command/gumball/grip/third-party event sequence.
 - Complete document-string undo/redo behavior or real save/close/reopen/Save As recovery. Service-restart tests preserve an in-memory document; the separate disk-storage test verifies file contents, not desktop reopening/automatic catch-up.
 - Protection against source geometry edits made while listeners are stopped/bypassed after an original edit was deferred. The suite checks the corresponding persisted material-type guard, not a durable source-geometry proof.
-- General structural split/join/removal/relink/detach support, copied/flat upstream promotion, or block-definition topology updates.
+- General structural split/join/removal/relink/detach support beyond the recognized input-group omissions above, copied/flat upstream promotion, or block-definition topology updates.
 - Hardware material-only BOM reconciliation, all same-parent stock-assignment paths, large-production-model performance, or exhaustive geometry equivalence for curved/chiral parts.
 - Automatic missing copied-view rebuilding, a first automatic flat layout, or fully atomic rollback across a complete update and all its downstream assemblies. Explicit individual placement is covered separately.
 

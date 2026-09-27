@@ -258,6 +258,12 @@ public sealed class FlatPartSynchronizationService
             }
         }
         CleanupRetiredLayers(doc, assembly, previousAssembly);
+        // Membership removal can leave the zero-quantity definition alive for one pass
+        // so this service can retire its flat representative and owned annotations.
+        // Once that succeeds, don't require a second Update Assembly to retire the row.
+        assembly.Parts.RemoveAll(part => part.Quantity == 0 && part.SourceObjectIds.Count == 0 &&
+            !assembly.LinkGraph.Nodes.Any(node => node.PartId == part.Id) &&
+            part.GeneratedObjectIds.All(id => doc.Objects.FindId(id) is null));
         return new FlatPartSynchronizationResult(changedIds.ToArray(), added, removed, review);
     }
 

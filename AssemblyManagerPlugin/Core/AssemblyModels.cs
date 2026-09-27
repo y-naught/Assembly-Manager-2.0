@@ -67,9 +67,10 @@ public sealed class PartRecord
     /// <summary>
     /// Parent material identity used when deciding whether live source occurrences belong to
     /// the same part category. Kept separate from MaterialId, which may identify a selected
-    /// stock shape used by nesting and purchasing.
+    /// stock shape used by nesting and purchasing. Empty means an accepted unassigned/TBD
+    /// category; null means legacy metadata that has not yet been initialized.
     /// </summary>
-    public string CategorizationMaterialId { get; set; } = string.Empty;
+    public string? CategorizationMaterialId { get; set; }
     public string MaterialId { get; set; } = string.Empty;
     public List<Guid> SourceObjectIds { get; set; } = new();
     public List<Guid> GeneratedObjectIds { get; set; } = new();
@@ -324,7 +325,16 @@ public sealed class SourceComponentInstanceRecord
 }
 
 /// <summary>
-/// An explicitly accepted additive component regroup, awaiting the operator's Update Assembly.
+/// Coordinate space in which component additions were selected.
+/// </summary>
+public static class ComponentAdditionOrigins
+{
+    public const string Original = "Original";
+    public const string Input = "Input";
+}
+
+/// <summary>
+/// An explicitly accepted original regroup or input addition, awaiting Update Assembly.
 /// Stores identities, not geometry: all members and placements are revalidated before applying.
 /// </summary>
 public sealed class PendingComponentUpdateRecord
@@ -333,9 +343,15 @@ public sealed class PendingComponentUpdateRecord
     public Guid ComponentId { get; set; }
     /// <summary>The selected regrouped occurrence; the only occurrence this plan may modify.</summary>
     public Guid TemplateInstanceId { get; set; }
+    /// <summary>Space containing the operator's additions. Missing in older files means Original.</summary>
+    public string AdditionOrigin { get; set; } = ComponentAdditionOrigins.Original;
+    /// <summary>The edited input or original group, according to AdditionOrigin.</summary>
     public Guid RegroupedGroupId { get; set; }
     public Guid PreviousGeneratedGroupId { get; set; }
+    public Guid PreviousSourceGroupId { get; set; }
     public List<Guid> AddedObjectIds { get; set; } = new();
+    /// <summary>Input node identities explicitly omitted by a recognized input regroup.</summary>
+    public List<Guid> RemovedSourceNodeIds { get; set; } = new();
     // Retained for saved-model compatibility. New plans contain only TemplateInstanceId;
     // older cohort lists do not authorize edits to the other occurrences.
     public List<Guid> InstanceIds { get; set; } = new();

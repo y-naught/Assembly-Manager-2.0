@@ -217,11 +217,12 @@ public sealed class ComponentDrawingService
             {
                 var partId = assembly.Parts.FirstOrDefault(part =>
                     string.Equals(part.Name, copiedObject.PartName, StringComparison.OrdinalIgnoreCase))?.Id ?? Guid.Empty;
+                var parentNode = assembly.LinkGraph.Nodes.SingleOrDefault(node => node.ObjectId == copiedObject.ParentObjectId);
                 _lineage.RegisterDerived(
                     doc,
                     assembly,
                     copiedObject.ParentObjectId,
-                    AssemblyLinkRoles.OriginalAssembly,
+                    parentNode?.Role ?? AssemblyLinkRoles.OriginalAssembly,
                     copiedObject.TargetObjectId,
                     AssemblyLinkRoles.CopiedComponent,
                     parentToChild,
@@ -229,7 +230,8 @@ public sealed class ComponentDrawingService
                         HardwareMetadata.TryGetFromObject(parent, out _)
                         ? AssemblyLinkRecipes.HardwareCopy : AssemblyLinkRecipes.DirectCopy,
                     partId: partId,
-                    componentId: component.Id);
+                    componentId: component.Id,
+                    sourceComponentInstanceId: parentNode?.SourceComponentInstanceId ?? Guid.Empty);
             }
 
             var copiedIds = copiedObjects.Select(item => item.TargetObjectId).ToList();

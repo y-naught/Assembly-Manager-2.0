@@ -576,7 +576,7 @@ internal static partial class Program
         {
             Require(services.Fingerprints.TryCreatePartCandidate(doc.Objects.FindId(part.SourceObjectIds[0]), out var candidate), "Retained part fingerprint must be readable.");
             candidate.PartName = part.Name;
-            candidate.MaterialId = part.CategorizationMaterialId;
+            candidate.MaterialId = part.CategorizationMaterialId ?? MaterialAssignment.NormalizeMaterialIdForCategory(part.MaterialId);
             return candidate;
         }).ToList();
         component.Fingerprint = services.Fingerprints.CreateComponentFingerprint(componentCandidates);

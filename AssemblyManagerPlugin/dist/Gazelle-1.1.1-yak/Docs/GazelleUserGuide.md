@@ -440,4 +440,4 @@ The [code audit](CodeAudit.md) separates verified functionality, known implement
 - [Part Categorization Algorithm](PartCategorizationAlgorithm.md): comparison and numbering rules.
 - [Linked Assembly Architecture](LinkedAssemblyArchitecture.md): implementation and remaining design work.
 - [Material Library Format](MaterialLibraryFormat.md) and [Export Schemas](ExportSchemas.md): data interchange.
-- [Code Audit](CodeAudit.md) and [regression runner](../../tests/Gazelle.Regression/README.md): review findings and verification limits.
+- [Code Audit](CodeAudit.md) and [regression runner](https://github.com/y-naught/Assembly-Manager-2.0/blob/v1.1.1/tests/Gazelle.Regression/README.md): review findings and verification limits.

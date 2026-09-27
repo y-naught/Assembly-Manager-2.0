@@ -10,11 +10,12 @@ namespace AssemblyManagerPlugin.Services;
 public sealed record ComponentUpdateResult(string AssemblyName, string ComponentName, int AddedObjectCount, int OccurrenceCount);
 
 /// <summary>
-/// Explicit, two-step component editing. Staging records the operator's regrouped original;
-/// applying adds members only to that occurrence and its linked input/copied geometry. Existing members are never
-/// replaced or removed by this service. Structural removals and ambiguous placements fail closed.
+/// Explicit, two-step component editing. Staging records a regrouped original or an input addition;
+/// applying updates only that occurrence and its linked input/copied geometry. Input regrouping
+/// may retire explicitly omitted members' managed copies; input objects themselves are preserved.
+/// Ambiguous membership, dependencies, and placements fail closed.
 /// </summary>
-public sealed class ComponentUpdateService
+public sealed partial class ComponentUpdateService
 {
     private readonly AssemblyRepository _repository;
     private readonly LayerService _layers;
@@ -51,6 +52,8 @@ public sealed class ComponentUpdateService
             throw new InvalidOperationException("The regrouped component is missing retained members. Removing, splitting, or replacing member identities is not supported by Update Component yet.");
         var added = ids.Except(expected).OrderBy(id => id).ToList();
         var previous = assembly.PendingComponentUpdates.SingleOrDefault(item => item.TemplateInstanceId == donor.Id);
+        if (previous is not null && previous.AdditionOrigin != ComponentAdditionOrigins.Original)
+            throw new InvalidOperationException("This occurrence already has input additions staged. Use Update Assembly before regrouping its ORIGINAL ASSEMBLIES component.");
         var pending = new PendingComponentUpdateRecord
         {
             ComponentId = componentId,
@@ -82,8 +85,70 @@ public sealed class ComponentUpdateService
         return new ComponentUpdateResult(assembly.Name, component.Name, added.Count, 1);
     }
 
+    /// <summary>
+    /// Adds an existing object to one registered input group and stages downstream creation.
+    /// The selected source UUID, geometry, layer, and material are retained. Repeated calls
+    /// accumulate additions; no generated group is rebound and no copies are made here.
+    /// </summary>
+    public ComponentUpdateResult StageInputAddition(RhinoDoc doc, string assemblyName, Guid sourceInstanceId, Guid addedObjectId)
+    {
+        var store = _repository.Load(doc);
+        var assembly = store.FindAssembly(assemblyName)
+            ?? throw new InvalidOperationException($"Assembly '{assemblyName}' was not found.");
+        var instance = assembly.LinkGraph.SourceComponentInstances.SingleOrDefault(item => item.Id == sourceInstanceId)
+            ?? throw new InvalidOperationException("The selected input component occurrence no longer exists.");
+        var group = FindGroup(doc, instance.SourceGroupId);
+        var component = assembly.Components.Single(item => item.Id == instance.ComponentId);
+        var previous = assembly.PendingComponentUpdates.SingleOrDefault(item => item.TemplateInstanceId == instance.Id);
+        if (previous is not null && previous.AdditionOrigin != ComponentAdditionOrigins.Input)
+            throw new InvalidOperationException("This occurrence already has an ORIGINAL ASSEMBLIES update staged. Use Update Assembly before adding parts to its input group.");
+        if (previous?.AddedObjectIds.Contains(addedObjectId) == true)
+            throw new InvalidOperationException("This item is already staged for this component. Click Update Assembly to apply it.");
+        var pending = new PendingComponentUpdateRecord
+        {
+            Id = previous?.Id ?? Guid.NewGuid(),
+            CreatedAt = previous?.CreatedAt ?? DateTimeOffset.UtcNow,
+            ComponentId = component.Id,
+            TemplateInstanceId = instance.Id,
+            AdditionOrigin = ComponentAdditionOrigins.Input,
+            // Keep this INPUT identity distinct from GeneratedGroupId. Older builds that
+            // do not know AdditionOrigin then reject the plan instead of inverse-copying it.
+            RegroupedGroupId = group.Id,
+            PreviousGeneratedGroupId = instance.GeneratedGroupId,
+            PreviousSourceGroupId = previous?.PreviousSourceGroupId ?? instance.SourceGroupId,
+            AddedObjectIds = (previous?.AddedObjectIds ?? new List<Guid>()).Append(addedObjectId).ToList(),
+            RemovedSourceNodeIds = previous?.RemovedSourceNodeIds.ToList() ?? new List<Guid>(),
+            InstanceIds = new List<Guid> { instance.Id },
+            MemberNodeIdsByInstance = previous?.MemberNodeIdsByInstance ?? new Dictionary<Guid, List<Guid>>
+            {
+                [instance.Id] = instance.SourceNodeIds.OrderBy(id => id).ToList()
+            }
+        };
+        // Check the prospective membership without changing Rhino or persisted metadata.
+        using var plan = Preflight(doc, store, assembly, pending, staged: false, inputObjectToGroup: addedObjectId);
+        var value = RequireObject(doc, addedObjectId);
+        using var attributes = value.Attributes.Duplicate();
+        using var mutation = AssemblyLinkMutationGate.Enter();
+        try
+        {
+            if (!(value.Attributes.GetGroupList() ?? Array.Empty<int>()).Contains(group.Index))
+                AddToGroup(doc, group.Index, addedObjectId);
+            assembly.PendingComponentUpdates.RemoveAll(item => item.TemplateInstanceId == instance.Id);
+            assembly.PendingComponentUpdates.Add(pending);
+            assembly.UpdatedAt = DateTimeOffset.UtcNow;
+            _repository.Save(doc, store);
+        }
+        catch
+        {
+            RequireModify(doc, addedObjectId, attributes);
+            throw;
+        }
+        return new ComponentUpdateResult(assembly.Name, component.Name, pending.AddedObjectIds.Count, 1);
+    }
+
     public IReadOnlyList<Guid> ApplyPending(RhinoDoc doc, AssemblyStore store, AssemblyRecord assembly)
     {
+        EnsureInputGroupsReady(assembly);
         if (assembly.PendingComponentUpdates.Count == 0)
             return Array.Empty<Guid>();
         var plans = new List<UpdatePlan>();
@@ -100,6 +165,7 @@ public sealed class ComponentUpdateService
                 addition.SharedAddition = null;
             }
             AssignPartCategories(doc, assembly, allAdditions);
+            var removalBatch = PrepareRemovalBatch(doc, store, assembly, plans);
             var reservedHardwareNames = assembly.Hardware.Select(hardware => hardware.LayerName)
                 .Concat(allAdditions.Where(addition => addition.Hardware is not null).Select(addition => addition.LayerName))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -107,6 +173,7 @@ public sealed class ComponentUpdateService
             var addedIds = new List<Guid>();
             var originalAttributes = new Dictionary<Guid, ObjectAttributes>();
             var createdGroups = new List<int>();
+            var deletedSerialNumbers = new List<uint>();
             var existingLayers = doc.Layers.Where(layer => !layer.IsDeleted).Select(layer => layer.Id).ToHashSet();
             var sourceIds = new List<Guid>();
             using var mutation = AssemblyLinkMutationGate.Enter();
@@ -114,6 +181,7 @@ public sealed class ComponentUpdateService
             {
                 foreach (var plan in plans)
                     ApplyPlan(doc, assembly, plan, addedIds, originalAttributes, createdGroups, sourceIds, reservedHardwareNames);
+                ApplyRemovals(doc, assembly, removalBatch, originalAttributes, deletedSerialNumbers);
                 var adoptedIds = allAdditions.Select(addition => addition.Object.Id).ToList();
                 foreach (var ownerAssembly in store.Assemblies)
                     foreach (var conflict in ownerAssembly.LinkGraph.Conflicts.Where(conflict =>
@@ -136,6 +204,9 @@ public sealed class ComponentUpdateService
                 // every pre-existing object retain their UUID and original attributes.
                 foreach (var id in addedIds.AsEnumerable().Reverse())
                     doc.Objects.Delete(id, true);
+                foreach (var serial in deletedSerialNumbers.AsEnumerable().Reverse())
+                    if (!doc.Objects.Undelete(serial))
+                        RhinoApp.WriteLine("Gazelle could not restore one retired object during rollback. Use Rhino Undo before continuing.");
                 foreach (var (id, attributes) in originalAttributes)
                     doc.Objects.ModifyAttributes(id, attributes, true);
                 foreach (var index in createdGroups.AsEnumerable().Reverse())
@@ -159,27 +230,44 @@ public sealed class ComponentUpdateService
     }
 
     private UpdatePlan Preflight(RhinoDoc doc, AssemblyStore store, AssemblyRecord assembly,
-        PendingComponentUpdateRecord pending, bool staged)
+        PendingComponentUpdateRecord pending, bool staged, Guid? inputObjectToGroup = null, bool allowInputRebind = false)
     {
+        if (pending.AdditionOrigin is not (ComponentAdditionOrigins.Input or ComponentAdditionOrigins.Original))
+            throw new InvalidOperationException("The component addition origin is unsupported. Use the same or a newer Gazelle version.");
+        var fromInput = pending.AdditionOrigin == ComponentAdditionOrigins.Input;
+        if ((!fromInput && pending.RemovedSourceNodeIds.Count > 0) ||
+            pending.RemovedSourceNodeIds.Distinct().Count() != pending.RemovedSourceNodeIds.Count)
+            throw new InvalidOperationException("The staged component removal identities are invalid.");
+        var recovery = fromInput
+            ? "Restore the registered input group, its retained members and staged additions, then retry AddPartToComponent or Update Assembly."
+            : "Run Update Component again with the complete regrouped ORIGINAL ASSEMBLIES occurrence.";
         var component = assembly.Components.SingleOrDefault(item => item.Id == pending.ComponentId)
-                        ?? throw new InvalidOperationException("A staged component no longer exists. Run Update Component again.");
+                        ?? throw new InvalidOperationException("A staged component no longer exists. " + recovery);
         var donor = assembly.LinkGraph.SourceComponentInstances.SingleOrDefault(item =>
                         item.Id == pending.TemplateInstanceId && item.ComponentId == component.Id)
-                    ?? throw new InvalidOperationException("The regrouped template occurrence no longer exists.");
+                    ?? throw new InvalidOperationException("The selected component occurrence no longer exists. " + recovery);
         if (!pending.InstanceIds.Contains(donor.Id))
-            throw new InvalidOperationException("The staged component does not include its regrouped occurrence. Run Update Component again.");
+            throw new InvalidOperationException("The staged component does not include its selected occurrence. " + recovery);
+        if (pending.RemovedSourceNodeIds.Except(donor.SourceNodeIds).Any() ||
+            pending.RemovedSourceNodeIds.Count == donor.SourceNodeIds.Count)
+            throw new InvalidOperationException("Regrouping must retain at least one original input member from exactly one component occurrence.");
         // Earlier versions saved the complete component cohort. The regrouped occurrence and
         // its saved retained-member proof are authoritative; never fan out those legacy lists.
         // Unchanged siblings need not be present, editable, or geometrically distinguishable.
         var instances = new[] { donor };
         var group = FindGroup(doc, pending.RegroupedGroupId);
-        if (staged && donor.GeneratedGroupId != group.Id)
-            throw new InvalidOperationException("The staged component was regrouped again. Run Update Component with its current group.");
+        if ((fromInput && ((!allowInputRebind && donor.SourceGroupId != group.Id) || donor.GeneratedGroupId == group.Id)) ||
+            (!fromInput && staged && donor.GeneratedGroupId != group.Id))
+            throw new InvalidOperationException("The staged component's group identity changed. " + recovery);
         var originals = OriginalNodes(assembly, donor);
         var oldIds = originals.Select(node => node.ObjectId).ToHashSet();
+        var retainedIds = fromInput
+            ? assembly.LinkGraph.Nodes.Where(node => donor.SourceNodeIds.Contains(node.Id) && !pending.RemovedSourceNodeIds.Contains(node.Id)).Select(node => node.ObjectId).ToHashSet()
+            : oldIds;
         var actualIds = GroupMembers(doc, group).ToHashSet();
-        if (!actualIds.SetEquals(oldIds.Concat(pending.AddedObjectIds)))
-            throw new InvalidOperationException("The staged group membership changed or retained members are missing. Run Update Component again with the complete regrouped component.");
+        if (fromInput && inputObjectToGroup.HasValue) actualIds.Add(inputObjectToGroup.Value);
+        if (!actualIds.SetEquals(retainedIds.Concat(pending.AddedObjectIds)))
+            throw new InvalidOperationException("The staged group membership changed or retained members are missing. " + recovery);
         if (pending.AddedObjectIds.Count != pending.AddedObjectIds.Distinct().Count())
             throw new InvalidOperationException("The staged addition identities are ambiguous.");
         var reservedIds = store.Assemblies.SelectMany(owner => owner.PendingComponentUpdates
@@ -199,6 +287,11 @@ public sealed class ComponentUpdateService
                 var value = RequireObject(doc, id);
                 if (oldIds.Contains(id) || allOwnedIds.Contains(id))
                     throw new InvalidOperationException("An added item is already linked to an assembly. Use a new, independent copy, not another managed occurrence.");
+                if (fromInput && (value.Attributes.GetGroupList() ?? Array.Empty<int>()).Any(index =>
+                        index != group.Index && ((doc.Groups.GroupMembers(index) ?? Array.Empty<RhinoObject>()).Any(member => allOwnedIds.Contains(member.Id)) ||
+                            store.Assemblies.SelectMany(owner => owner.LinkGraph.SourceComponentInstances).Any(owner =>
+                                owner.SourceGroupId == doc.Groups.FindIndex(index)?.Id || owner.GeneratedGroupId == doc.Groups.FindIndex(index)?.Id))))
+                    throw new InvalidOperationException("The new item already belongs to another managed component group. Use an independent item outside that group.");
                 ValidateInheritedIdentity(doc, store, value);
                 var isHardware = HardwareMetadata.TryGetFromObject(value, out var hardware);
                 PartCandidate? candidate = null;
@@ -224,23 +317,34 @@ public sealed class ComponentUpdateService
             {
                 if (!pending.MemberNodeIdsByInstance.TryGetValue(instance.Id, out var oldNodeIds) ||
                     !instance.SourceNodeIds.ToHashSet().SetEquals(oldNodeIds))
-                    throw new InvalidOperationException("A staged occurrence's retained member identities changed. Run Update Component again.");
-                var members = ValidateMembers(doc, store, assembly, instance, pending, tolerance);
-                var generatedGroup = group;
+                    throw new InvalidOperationException("A staged occurrence's retained member identities changed. " + recovery);
+                var removedMembers = ValidateRemovedMembers(doc, store, assembly, instance, pending);
+                var members = ValidateMembers(doc, store, assembly, instance, pending, tolerance, removedMembers);
+                var allMembers = members.Concat(removedMembers).ToList();
+                var generatedGroup = fromInput ? FindGroup(doc, instance.GeneratedGroupId) : group;
+                var sourceGroupId = fromInput ? group.Id : instance.SourceGroupId;
                 if (store.Assemblies.SelectMany(owner => owner.LinkGraph.SourceComponentInstances
                         .Where(other => owner.Id != assembly.Id || other.Id != instance.Id))
                     .Any(other => other.SourceGroupId == generatedGroup.Id || other.GeneratedGroupId == generatedGroup.Id ||
-                                  (instance.SourceGroupId != Guid.Empty &&
-                                   (other.SourceGroupId == instance.SourceGroupId || other.GeneratedGroupId == instance.SourceGroupId))))
+                                  (sourceGroupId != Guid.Empty &&
+                                   (other.SourceGroupId == sourceGroupId || other.GeneratedGroupId == sourceGroupId)) ||
+                                  (instance.SourceGroupId != Guid.Empty && other.SourceGroupId == instance.SourceGroupId)))
                     throw new InvalidOperationException("A component group is also owned by another assembly or occurrence. Structural updates to shared or downstream component groups need explicit membership support and cannot be applied safely yet.");
-                var expectedIds = members.Select(member => member.Original.ObjectId).ToHashSet();
-                expectedIds.UnionWith(pending.AddedObjectIds);
+                var expectedIds = allMembers.Select(member => member.Original.ObjectId).ToHashSet();
+                if (!fromInput) expectedIds.UnionWith(pending.AddedObjectIds);
                 if (!GroupMembers(doc, generatedGroup).ToHashSet().SetEquals(expectedIds))
                     throw new InvalidOperationException("The selected component occurrence has changed group membership. Restore its retained members before applying this design.");
-                var sourceGroup = instance.SourceGroupId == Guid.Empty ? null : FindGroup(doc, instance.SourceGroupId);
-                if (sourceGroup is not null && !GroupMembers(doc, sourceGroup).ToHashSet().SetEquals(members.Select(member => member.Source.ObjectId)))
-                    throw new InvalidOperationException("The input component group has changed membership. Restore it before updating the component.");
-                var copiedLayouts = FindCopiedLayouts(doc, assembly, members, tolerance);
+                var sourceGroup = sourceGroupId == Guid.Empty ? null : FindGroup(doc, sourceGroupId);
+                if (sourceGroup is not null)
+                {
+                    var sourceIds = GroupMembers(doc, sourceGroup).ToHashSet();
+                    if (fromInput && inputObjectToGroup.HasValue) sourceIds.Add(inputObjectToGroup.Value);
+                    var expectedSourceIds = members.Select(member => member.Source.ObjectId).ToHashSet();
+                    if (fromInput) expectedSourceIds.UnionWith(pending.AddedObjectIds);
+                    if (!sourceIds.SetEquals(expectedSourceIds))
+                        throw new InvalidOperationException("The input component group has changed membership. Restore it before updating the component.");
+                }
+                var copiedLayouts = FindCopiedLayouts(doc, assembly, allMembers, tolerance);
                 foreach (var layout in copiedLayouts)
                 {
                     var layoutGroupId = doc.Groups.FindIndex(layout.GroupIndex).Id;
@@ -249,7 +353,7 @@ public sealed class ComponentUpdateService
                         throw new InvalidOperationException("A copied-component group is also an input or original group of an assembly. Structural updates to that shared downstream group are not supported yet.");
                 }
                 plans.Add(new InstancePlan(instance, members, members[0].SourceToOriginal,
-                    sourceGroup?.Index ?? -1, copiedLayouts));
+                    sourceGroup?.Index ?? -1, copiedLayouts) { RemovedMembers = removedMembers });
             }
             AssignPartCategories(doc, assembly, additions);
             return new UpdatePlan(component, pending, additions, plans);
@@ -262,13 +366,14 @@ public sealed class ComponentUpdateService
     }
 
     private List<RetainedMember> ValidateMembers(RhinoDoc doc, AssemblyStore store, AssemblyRecord assembly,
-        SourceComponentInstanceRecord instance, PendingComponentUpdateRecord pending, double tolerance)
+        SourceComponentInstanceRecord instance, PendingComponentUpdateRecord pending, double tolerance,
+        IReadOnlyList<RetainedMember> removedMembers)
     {
         if (!string.Equals(instance.Status, AssemblyLinkStatuses.Active, StringComparison.OrdinalIgnoreCase) || instance.SourceNodeIds.Count == 0 ||
             instance.SourceNodeIds.Count != instance.SourceNodeIds.Distinct().Count())
             throw new InvalidOperationException("The selected component occurrence must have active, unambiguous retained input members.");
         var result = new List<RetainedMember>();
-        foreach (var id in instance.SourceNodeIds)
+        foreach (var id in instance.SourceNodeIds.Except(pending.RemovedSourceNodeIds))
         {
             var source = assembly.LinkGraph.Nodes.Single(node => node.Id == id);
             if (source.Role != AssemblyLinkRoles.Source || source.SourceComponentInstanceId != instance.Id)
@@ -308,7 +413,7 @@ public sealed class ComponentUpdateService
                 throw new InvalidOperationException("A retained member is neither a categorized part nor recognized hardware.");
             result.Add(new RetainedMember(source, original, placement, identity));
         }
-        if (!OriginalNodes(assembly, instance).Select(node => node.Id).ToHashSet().SetEquals(result.Select(member => member.Original.Id)))
+        if (!OriginalNodes(assembly, instance).Select(node => node.Id).ToHashSet().SetEquals(result.Concat(removedMembers).Select(member => member.Original.Id)))
             throw new InvalidOperationException("The component has unaccounted original members. Resolve its membership issues first.");
         return result;
     }
@@ -439,6 +544,7 @@ public sealed class ComponentUpdateService
 
         foreach (var instance in plan.Instances)
         {
+            var fromInput = plan.Pending.AdditionOrigin == ComponentAdditionOrigins.Input;
             var newSourceIds = new List<Guid>();
             foreach (var addition in plan.Additions)
             {
@@ -447,26 +553,42 @@ public sealed class ComponentUpdateService
                 var color = part is not null ? _layers.GetOrAssignPartColor(doc, assembly, part, _colorizePartsEnabled()) : Color.DarkGray;
                 var originalLayer = _layers.EnsurePartLayerIndex(doc,
                     LayerService.OriginalPart(assembly.Name, plan.Component.Name, layerName), color);
-                if (!instance.SourceToOriginal.TryGetInverse(out var originalToSource))
-                    throw new InvalidOperationException("A component placement became invalid while applying additions.");
-                using var sourceAttributes = addition.Attributes.Duplicate();
-                sourceAttributes.RemoveFromAllGroups();
-                AssemblyLineageService.ClearLinkMetadata(sourceAttributes);
-                sourceAttributes.LayerIndex = RequireObject(doc, instance.Members[0].Source.ObjectId).Attributes.LayerIndex;
-                if (addition.Hardware is not null) HardwareMetadata.Mark(sourceAttributes, addition.Hardware);
-                var sourceId = AddTransformed(doc, addition.Object, originalToSource, sourceAttributes);
-                addedIds.Add(sourceId);
-                newSourceIds.Add(sourceId);
-                sourceIds.Add(sourceId);
-
                 using var originalAttributes = addition.Attributes.Duplicate();
                 AssemblyLineageService.ClearLinkMetadata(originalAttributes);
                 originalAttributes.LayerIndex = originalLayer;
                 MaterialAssignment.NormalizeToParentMaterial(originalAttributes);
                 if (addition.Hardware is not null) HardwareMetadata.Mark(originalAttributes, addition.Hardware);
-                var originalId = addition.Object.Id;
-                savedAttributes.TryAdd(originalId, addition.Attributes.Duplicate());
-                RequireModify(doc, originalId, originalAttributes);
+                Guid sourceId;
+                Guid originalId;
+                using var sourceAttributes = addition.Attributes.Duplicate();
+                AssemblyLineageService.ClearLinkMetadata(sourceAttributes);
+                if (addition.Hardware is not null) HardwareMetadata.Mark(sourceAttributes, addition.Hardware);
+                if (fromInput)
+                {
+                    sourceId = addition.Object.Id;
+                    savedAttributes.TryAdd(sourceId, addition.Attributes.Duplicate());
+                    // Adopt the real input, preserving its UUID, placement, layer, groups,
+                    // and material. Only inherited linkage from an ordinary Rhino copy is cleared.
+                    RequireModify(doc, sourceId, sourceAttributes);
+                    originalAttributes.RemoveFromAllGroups();
+                    originalId = AddTransformed(doc, RequireObject(doc, sourceId), instance.SourceToOriginal, originalAttributes);
+                    addedIds.Add(originalId);
+                    AddToGroup(doc, FindGroup(doc, instance.Instance.GeneratedGroupId).Index, originalId);
+                }
+                else
+                {
+                    if (!instance.SourceToOriginal.TryGetInverse(out var originalToSource))
+                        throw new InvalidOperationException("A component placement became invalid while applying additions.");
+                    sourceAttributes.RemoveFromAllGroups();
+                    sourceAttributes.LayerIndex = RequireObject(doc, instance.Members[0].Source.ObjectId).Attributes.LayerIndex;
+                    sourceId = AddTransformed(doc, addition.Object, originalToSource, sourceAttributes);
+                    addedIds.Add(sourceId);
+                    newSourceIds.Add(sourceId);
+                    originalId = addition.Object.Id;
+                    savedAttributes.TryAdd(originalId, addition.Attributes.Duplicate());
+                    RequireModify(doc, originalId, originalAttributes);
+                }
+                sourceIds.Add(sourceId);
                 var recipe = addition.Hardware is null ? AssemblyLinkRecipes.DirectCopy : AssemblyLinkRecipes.HardwareCopy;
                 var role = addition.Hardware is null ? AssemblyLinkRoles.OriginalAssembly : AssemblyLinkRoles.Hardware;
                 var registration = _lineage.RegisterDerived(doc, assembly, sourceId, AssemblyLinkRoles.Source, originalId,
@@ -541,7 +663,7 @@ public sealed class ComponentUpdateService
         {
             var acceptedGroup = conflict.ConflictType == AssemblyLinkConflictTypes.ComponentMembershipChanged &&
                 conflict.Metadata.TryGetValue("GroupId", out var groupText) && Guid.TryParse(groupText, out var groupId) &&
-                (groupId == pending.PreviousGeneratedGroupId || groupId == pending.RegroupedGroupId) &&
+                (groupId == pending.PreviousGeneratedGroupId || groupId == pending.PreviousSourceGroupId || groupId == pending.RegroupedGroupId) &&
                 (!conflict.Metadata.TryGetValue("EventKey", out var eventKey) ||
                  eventKey.StartsWith($"group-membership:{pending.TemplateInstanceId}:", StringComparison.OrdinalIgnoreCase));
             if (!acceptedGroup && !(IsAdoptableDuplicate(assembly, conflict, pending.AddedObjectIds) &&
@@ -651,7 +773,7 @@ public sealed class ComponentUpdateService
                 var group = doc.Groups.FindIndex(index);
                 if (group is not null && !group.IsDeleted && group.Id == id) return group;
             }
-        throw new InvalidOperationException("A required component group is missing. Regroup the complete original occurrence and run Update Component again.");
+        throw new InvalidOperationException("A required component group is missing. Restore its complete group before updating. Use Update Component only for a regrouped ORIGINAL ASSEMBLIES occurrence.");
     }
 
     private static IEnumerable<Guid> GroupMembers(RhinoDoc doc, Group group) =>
@@ -669,6 +791,7 @@ public sealed class ComponentUpdateService
         public Transform SourceToOriginal { get; }
         public int SourceGroupIndex { get; }
         public List<CopiedLayout> CopiedLayouts { get; }
+        public IReadOnlyList<RetainedMember> RemovedMembers { get; init; } = Array.Empty<RetainedMember>();
         public InstancePlan(SourceComponentInstanceRecord instance, IReadOnlyList<RetainedMember> members,
             Transform sourceToOriginal, int sourceGroupIndex, List<CopiedLayout> layouts)
         {

@@ -48,6 +48,7 @@ public sealed class ReferenceUpdateService
         var store = _repository.Load(doc);
         var assembly = store.FindAssembly(assemblyName)
             ?? throw new InvalidOperationException($"Assembly '{assemblyName}' was not found.");
+        ComponentUpdateService.EnsureInputGroupsReady(assembly);
         var suspensionMayResolve = _linkSafety?.IsAssemblyBlocked(doc, assembly.Id) == true;
         _linkSafety?.EnsureCanUpdate(doc, assembly.Id);
         if (suspensionMayResolve)
@@ -63,7 +64,7 @@ public sealed class ReferenceUpdateService
         {
             if (_componentUpdates is null)
                 throw new InvalidOperationException("Component update support is unavailable. Load the current Gazelle plugin before updating this assembly.");
-            _updateFeedback($"Gazelle applying staged component additions in '{assemblyName}'...");
+            _updateFeedback($"Gazelle applying staged component membership changes in '{assemblyName}'...");
             using var mutation = AssemblyLinkMutationGate.Enter();
             _componentUpdates.ApplyPending(doc, store, assembly);
             // Save the complete structural registration before normal refresh. This makes a
@@ -144,7 +145,8 @@ public sealed class ReferenceUpdateService
         var openConflictsBefore = CountOpenConflicts(store);
         var previousIssueIds = OpenIssueIds(store);
         var initialSeeds = store.Assemblies
-            .Where(assembly => assembly.PendingComponentUpdates.Count == 0 && _linkSafety?.IsAssemblyBlocked(doc, assembly.Id) != true)
+            .Where(assembly => assembly.PendingComponentUpdates.Count == 0 && !ComponentUpdateService.HasInputRegroupIssue(assembly) &&
+                _linkSafety?.IsAssemblyBlocked(doc, assembly.Id) != true)
             .SelectMany(assembly => assembly.LinkGraph.Nodes
                 .Where(node => sourceIds.Contains(node.ObjectId) &&
                                string.Equals(node.Role, AssemblyLinkRoles.Source, StringComparison.OrdinalIgnoreCase))
@@ -715,6 +717,7 @@ public sealed class ReferenceUpdateService
             if (!visitedSourceNodes.Add((seed.AssemblyId, seed.SourceNodeId)) ||
                 !assembliesById.TryGetValue(seed.AssemblyId, out var assembly) ||
                 assembly.PendingComponentUpdates.Count > 0 ||
+                ComponentUpdateService.HasInputRegroupIssue(assembly) ||
                 _linkSafety?.IsAssemblyBlocked(doc, assembly.Id) == true)
             {
                 continue;

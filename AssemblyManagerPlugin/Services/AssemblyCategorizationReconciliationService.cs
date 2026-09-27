@@ -392,9 +392,7 @@ public sealed class AssemblyCategorizationReconciliationService
                 .First();
             assignedPart.GeometryFingerprint = representative.Candidate.Fingerprint;
             var previousCategorizationMaterialId = MaterialAssignment.NormalizeMaterialIdForCategory(
-                string.IsNullOrWhiteSpace(assignedPart.CategorizationMaterialId)
-                    ? assignedPart.MaterialId
-                    : assignedPart.CategorizationMaterialId);
+                assignedPart.CategorizationMaterialId ?? assignedPart.MaterialId);
             var currentCategorizationMaterialId = MaterialAssignment.NormalizeMaterialIdForCategory(
                 representative.Candidate.MaterialId);
             if (!string.Equals(
@@ -630,9 +628,8 @@ public sealed class AssemblyCategorizationReconciliationService
                     _fingerprints.TryCreatePartCandidate(rhinoObject, out var candidate, out _))
                 {
                     candidate.PartName = part.Name;
-                    candidate.MaterialId = string.IsNullOrWhiteSpace(part.CategorizationMaterialId)
-                        ? MaterialAssignment.NormalizeMaterialIdForCategory(part.MaterialId)
-                        : part.CategorizationMaterialId;
+                    candidate.MaterialId = MaterialAssignment.NormalizeMaterialIdForCategory(
+                        part.CategorizationMaterialId ?? part.MaterialId);
                     candidates.Add(candidate);
                     continue;
                 }
@@ -1291,9 +1288,7 @@ public sealed class AssemblyCategorizationReconciliationService
     {
         var candidateMaterialId = MaterialAssignment.NormalizeMaterialIdForCategory(evidence.Candidate.MaterialId);
         var storedMaterialId = MaterialAssignment.NormalizeMaterialIdForCategory(
-            string.IsNullOrWhiteSpace(part.CategorizationMaterialId)
-                ? part.MaterialId
-                : part.CategorizationMaterialId);
+            part.CategorizationMaterialId ?? part.MaterialId);
         if (!string.Equals(candidateMaterialId, storedMaterialId, StringComparison.Ordinal))
             return false;
 

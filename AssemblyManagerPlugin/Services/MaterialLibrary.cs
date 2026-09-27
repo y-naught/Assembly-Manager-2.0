@@ -20,12 +20,22 @@ public sealed class MaterialLibraryService : IMaterialLibrary
     private readonly AssemblyRepository _repository;
     private readonly PluginSettingsService _settings;
     private readonly IActionHistorySink _history;
+    private readonly Func<PluginSettingsRecord> _loadSettings;
 
     public MaterialLibraryService(AssemblyRepository repository, PluginSettingsService settings, IActionHistorySink history)
+        : this(repository, settings, history, settings.Load)
+    {
+    }
+
+    // Allows isolated service tests to supply an in-memory library without reading the
+    // operator's saved plugin settings. Settings writes still use the normal service.
+    public MaterialLibraryService(AssemblyRepository repository, PluginSettingsService settings,
+        IActionHistorySink history, Func<PluginSettingsRecord> loadSettings)
     {
         _repository = repository;
         _settings = settings;
         _history = history;
+        _loadSettings = loadSettings ?? throw new ArgumentNullException(nameof(loadSettings));
     }
 
     public IReadOnlyList<MaterialDefinitionRecord> GetMaterialDefinitions(RhinoDoc? doc = null)
@@ -397,7 +407,7 @@ public sealed class MaterialLibraryService : IMaterialLibrary
 
     private PluginSettingsRecord LoadAndMigrateSettings(RhinoDoc? doc)
     {
-        var settings = _settings.Load();
+        var settings = _loadSettings();
         var changed = false;
 
         if (settings.Materials.Count == 0)
